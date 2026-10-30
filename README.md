@@ -1,22 +1,33 @@
 # VDE-VLM-ACCESS
 
-> **Empowering Vision-Language Models (Gemini, Claude, Antigravity, local VLMs) with direct eyes, hands, and control over VirtualBox Virtual Machines.**
+> **Empowering Vision-Language Models (Gemini, Claude, Antigravity, local VLMs) with direct eyes, hands, collaborative presence, and control over VirtualBox Virtual Machines.**
 
-This repository enables autonomous coding agents and VLMs working on the [Victors Desktop Environment (VDE)](https://github.com/i2qq/VDE) project to boot, observe, interact with, test, and debug Linux desktop environments inside Oracle VirtualBox.
+This repository enables autonomous coding agents and human developers working on the [Victors Desktop Environment (VDE)](https://github.com/i2qq/VDE) project to boot, observe, collaboratively interact with, test, and debug Linux desktop environments inside Oracle VirtualBox.
 
 ---
 
 ## 🌟 Key Capabilities
 
-- 👁️ **Multimodal VLM Vision**: Capture high-resolution screenshots directly into agent context (`observe`, `screenshot`).
-- 📐 **Coordinate Grid Overlays**: Automatically generates overlay images marked with coordinate rulers (every 100px) so VLMs can target buttons and windows with pixel-level precision.
-- ⌨️ **Precise Hardware Keyboard Injection**: Maps key combinations (`Ctrl+Alt+T`, `Super` / Win key, `Enter`, `Alt+F4`, `Esc`) into exact PS/2 Set 1 make/break scancodes, as well as text typing.
-- 🖱️ **Absolute Mouse Control**: Position, left/right/middle click, double click, drag, and scroll via VirtualBox COM and guest fallback.
-- 🛡️ **Safety Checkpoint Snapshots**: Create instant snapshots before testing experimental code and roll back in seconds if a build breaks the desktop.
-- 🔄 **Perceptual Diffing**: Measures before/after visual difference (`diff_ratio`) to confirm if UI elements opened, focused, or closed.
-- 📦 **Guest Execution & File Sync**: Run bash commands inside the guest (`guestcontrol run`) and synchronize files between host and VM.
-- 🔌 **Model Context Protocol (MCP)**: Native MCP tool server (`vde_vlm.server`) for standard agent integration.
-- 🧠 **Antigravity Skill**: Pre-packaged `skills/vde-vlm/SKILL.md` ready for immediate agent discovery.
+- 🔮 **Google Stitch-Style Collaborative Studio (`vde-vlm live --port 7891`)**:
+  - Open `http://localhost:7891` to see the live VM screen unfolding in real-time.
+  - Features real-time **agent presence**: when Gemini acts or clicks, a glowing cursor pointer with a `🤖 Gemini (x, y)` badge and click ripple indicator animates across the user's screen.
+  - The user can click anywhere on the canvas or type on their physical keyboard to interact with the VM collaboratively with the agent.
+- 🍃 **Zero Disk Bloat / Rolling Buffer**:
+  - Screen streams and observations overwrite a persistent rolling buffer instead of shredding host storage with thousands of temporary PNGs. Includes `vde-vlm clean` for instant artifact cleanup.
+- ⚡ **Compound Batch Actions & Macros (`vde-vlm macro`)**:
+  - Execute multi-step sequences in a single atomic turn (e.g. `type:hello|enter`, `wait:0.5`, `click:450,720`) rather than slow single-key round-trips.
+- 📐 **Subtle Non-Intrusive Vision Overlays**:
+  - Modern, subtle border rulers and corner intersection badges that do not slice through or obscure text.
+- ⌨️ **Precise Hardware Keyboard Injection**:
+  - Maps key combinations (`Ctrl+Alt+T`, `Super` / Win key, `Enter`, `Alt+F4`, `Esc`) into exact PS/2 Set 1 make/break scancodes, plus text typing.
+- 🖱️ **Absolute Mouse Control**:
+  - Position, left/right/middle click, double-click, drag, and scroll via VirtualBox COM and guest fallback.
+- 🛡️ **Safety Checkpoint Snapshots**:
+  - Create instant snapshots before testing experimental code and roll back in seconds if a build breaks the desktop.
+- 🔌 **Model Context Protocol (MCP)**:
+  - Native MCP tool server (`vde_vlm.server`) for standard agent integration.
+- 🧠 **Antigravity Skill**:
+  - Pre-packaged `skills/vde-vlm/SKILL.md` ready for immediate agent discovery.
 
 ---
 
@@ -27,12 +38,13 @@ This repository enables autonomous coding agents and VLMs working on the [Victor
                                   |   AI Agent / VLM (Gemini)    |
                                   +--------------+---------------+
                                                  |
-                   +-----------------------------+-----------------------------+
-                   |                                                           |
-          [ CLI / Terminal ]                                           [ MCP Tool Server ]
-         vde-vlm observe / click                                        tools/call: vm_*
-                   |                                                           |
-                   +-----------------------------+-----------------------------+
+         +---------------------------------------+---------------------------------------+
+         |                                       |                                       |
+[ Collaborative Studio ]                [ CLI / Terminal ]                       [ MCP Tool Server ]
+http://localhost:7891                   vde-vlm macro / click                    tools/call: vm_batch
+(Live Stream & Stitch Cursors)                   |                                       |
+         |                                       |                                       |
+         +---------------------------------------+---------------------------------------+
                                                  |
                                      +-----------v-----------+
                                      |   vde_vlm Python API  |
@@ -43,7 +55,7 @@ This repository enables autonomous coding agents and VLMs working on the [Victor
          |                       |                                       |
 +--------v--------+     +--------v--------+                     +--------v--------+
 |  Vision & Grid  |     | Keyboard/Mouse  |                     |  Guest Control  |
-|  PIL Overlays   |     | Scancodes & COM |                     | Shell Execution |
+| Rolling Buffers |     | Scancodes & COM |                     | Shell Execution |
 +--------+--------+     +--------+--------+                     +--------+--------+
          |                       |                                       |
          +-----------------------+---------------+-----------------------+
@@ -76,25 +88,13 @@ pip install -e .
 vde-vlm list
 ```
 
-Output:
-```
-VM Name                        State           UUID
----------------------------------------------------------------------------
-vmvdebox5                      poweroff        151e457b-2be6-4a1e-8c9d-21a6d4b18a65
-vmvdebox6.1                    poweroff        bd692e80-baae-4d36-9653-e94684f8b1d4
-```
-
-### 3. Boot & Observe Headless
+### 3. Launch the Collaborative Studio (Port 7891)
 
 ```bash
-# Power on headless
-vde-vlm start "vmvdebox6.1"
-
-# Observe with coordinate grid overlay
-vde-vlm observe "vmvdebox6.1"
+vde-vlm live --port 7891
 ```
 
-The output gives you the exact file path to both the raw screenshot and the grid overlay (`screenshot_grid.png`). Load this image into your agent's vision tool (`read_file`) to inspect the desktop!
+Open **http://localhost:7891** in your browser. Both you and Gemini can see and control the VM simultaneously!
 
 ---
 
@@ -103,18 +103,17 @@ The output gives you the exact file path to both the raw screenshot and the grid
 | Command | Description | Example |
 |---|---|---|
 | `vde-vlm list` | List all registered VMs and states | `vde-vlm list` |
+| `vde-vlm live [--port 7891]` | Launch collaborative live web studio | `vde-vlm live --port 7891` |
 | `vde-vlm start <vm> [--gui]` | Boot VM (default: headless) | `vde-vlm start "vmvdebox6.1"` |
-| `vde-vlm stop <vm> [--mode poweroff\|savestate\|acpi]` | Stop VM | `vde-vlm stop "vmvdebox6.1"` |
-| `vde-vlm observe <vm> [--ocr]` | Full observation (screen + grid + metrics) | `vde-vlm observe "vmvdebox6.1"` |
-| `vde-vlm screenshot <vm> [--grid]` | Save screenshot PNG | `vde-vlm screenshot "vmvdebox6.1" -o screen.png --grid` |
-| `vde-vlm click <vm> <x> <y> [--button left\|right] [--verify]` | Click pixel coordinate | `vde-vlm click "vmvdebox6.1" 450 720 --verify` |
+| `vde-vlm stop <vm>` | Stop VM | `vde-vlm stop "vmvdebox6.1"` |
+| `vde-vlm macro <vm> <steps...>` | Execute compound batch sequence | `vde-vlm macro "vmvdebox6.1" "type:echo hi\|enter" "wait:0.5" "click:450,720"` |
+| `vde-vlm observe <vm>` | Multimodal observation (rolling buffer) | `vde-vlm observe "vmvdebox6.1"` |
+| `vde-vlm click <vm> <x> <y>` | Click pixel coordinate | `vde-vlm click "vmvdebox6.1" 450 720 --verify` |
 | `vde-vlm type <vm> "<text>" [--enter]` | Type text into active window | `vde-vlm type "vmvdebox6.1" "ls -la" --enter` |
 | `vde-vlm key <vm> "<chord>"` | Send key combination | `vde-vlm key "vmvdebox6.1" "ctrl+alt+t"` |
-| `vde-vlm exec <vm> "<cmd>"` | Execute command inside guest | `vde-vlm exec "vmvdebox6.1" "whoami"` |
-| `vde-vlm upload <vm> <host> <guest>` | Copy files into guest | `vde-vlm upload "vmvdebox6.1" ./build /home/victor/build` |
-| `vde-vlm download <vm> <guest> <host>` | Copy files from guest | `vde-vlm download "vmvdebox6.1" /var/log/vde.log ./logs` |
 | `vde-vlm snapshot <vm> take <name>` | Create safety snapshot | `vde-vlm snapshot "vmvdebox6.1" take "baseline"` |
 | `vde-vlm snapshot <vm> restore <name>` | Roll back to snapshot | `vde-vlm snapshot "vmvdebox6.1" restore "baseline"` |
+| `vde-vlm clean` | Clean stale temporary screenshots | `vde-vlm clean` |
 | `vde-vlm serve` | Launch MCP JSON-RPC server | `vde-vlm serve` |
 
 ---
@@ -125,39 +124,22 @@ The output gives you the exact file path to both the raw screenshot and the grid
 from vde_vlm import VBoxVM
 
 vm = VBoxVM("vmvdebox6.1")
-
-# Boot headless
 vm.start(headless=True)
 
-# Create safety checkpoint
-with vm.checkpoint("test_vde_desktop"):
-    # Observe screen with coordinate grid
-    obs = vm.observe(grid=True)
-    print("Screenshot:", obs["screenshot"])
-    print("Grid Image:", obs["grid_screenshot"])
+# Compound batch interaction in one atomic turn
+result = vm.macro(
+    "type:google-chrome|enter",
+    "wait:1.5",
+    "click:500,350",
+    "type:https://github.com/i2qq/VDE|enter"
+)
 
-    # Press Super key to open VDE start menu
-    vm.press_key("super")
+# Observe screen without creating new temp files
+obs = vm.observe(grid=True)
+print("Screen:", obs["screenshot"])
 
-    # Verify visual change
-    click_res = vm.click(x=120, y=950, verify_change=True)
-    print("Clicked element, visual change:", click_res["diff_ratio"])
-
-# Stops VM safely
 vm.stop()
 ```
-
----
-
-## 🎯 Testing
-
-Run the included test suite:
-
-```bash
-python -m unittest discover -s tests -p "test_*.py" -v
-```
-
-All 10 tests verify key scancode parsing, VirtualBox executable discovery, VM enumeration, grid overlays, image metrics, and difference calculations.
 
 ---
 

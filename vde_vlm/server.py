@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 
 from vde_vlm.core import VBoxVM
 from vde_vlm.vbox import list_vms
+from vde_vlm.vision import clean_temp_artifacts
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger("vde_vlm.server")
@@ -51,19 +52,19 @@ TOOLS = [
     },
     {
         "name": "vm_observe",
-        "description": "Capture screen, coordinate grid overlay, resolution, and brightness metrics of VM.",
+        "description": "Capture screen, clean coordinate grid overlay, resolution, and brightness metrics of VM without disk bloat.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vm": {"type": "string", "description": "VM name or UUID"},
-                "grid": {"type": "boolean", "description": "Generate coordinate grid overlay", "default": True},
+                "grid": {"type": "boolean", "description": "Generate subtle coordinate grid overlay", "default": True},
             },
             "required": ["vm"],
         },
     },
     {
         "name": "vm_click",
-        "description": "Click at specific pixel coordinates on the VM screen.",
+        "description": "Click at specific pixel coordinates on the VM screen and broadcast agent cursor to collaborative live canvas.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -99,6 +100,22 @@ TOOLS = [
                 "key": {"type": "string", "description": "Key or combination to press"},
             },
             "required": ["vm", "key"],
+        },
+    },
+    {
+        "name": "vm_batch",
+        "description": "Execute an atomic sequence of actions (compound interaction: type, enter, wait, click, key chords) in a single turn.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "vm": {"type": "string", "description": "VM name or UUID"},
+                "steps": {
+                    "type": "array",
+                    "description": "List of action objects or shorthand strings (e.g. ['type:echo hello|enter', 'wait:0.5', 'click:450,720'])",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["vm", "steps"],
         },
     },
     {
@@ -140,6 +157,11 @@ TOOLS = [
             "required": ["vm", "name"],
         },
     },
+    {
+        "name": "vm_clean",
+        "description": "Clean up stale temporary screenshot files from system temp.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 
@@ -148,6 +170,10 @@ def dispatch_tool(name: str, args: Dict[str, Any]) -> Any:
     if name == "vm_list":
         vms = list_vms()
         return [{"name": m["name"], "uuid": m["uuid"], "state": VBoxVM(m["name"]).state} for m in vms]
+
+    if name == "vm_clean":
+        count = clean_temp_artifacts()
+        return {"cleaned_files": count}
 
     vm_name = args.get("vm")
     if not vm_name:
@@ -167,7 +193,7 @@ def dispatch_tool(name: str, args: Dict[str, Any]) -> Any:
 
     elif name == "vm_observe":
         grid = args.get("grid", True)
-        return vm.observe(grid=grid)
+        return vm.observe(grid=grid, use_rolling_cache=True)
 
     elif name == "vm_click":
         x = int(args["x"])
@@ -186,6 +212,10 @@ def dispatch_tool(name: str, args: Dict[str, Any]) -> Any:
         key = args["key"]
         vm.press_key(key)
         return {"pressed": key}
+
+    elif name == "vm_batch":
+        steps = args.get("steps", [])
+        return vm.batch(steps)
 
     elif name == "vm_exec":
         cmd = args["cmd"]
@@ -242,7 +272,7 @@ def run_stdio_server():
                     "id": req_id,
                     "result": {
                         "protocolVersion": "2024-11-05",
-                        "serverInfo": {"name": "vde-vlm-server", "version": "1.0.0"},
+                        "serverInfo": {"name": "vde-vlm-server", "version": "2.0.0"},
                         "capabilities": {"tools": {}},
                     },
                 }

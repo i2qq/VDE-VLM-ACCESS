@@ -2,7 +2,8 @@
 vde_vlm.core
 ~~~~~~~~~~~~
 High-level object-oriented VM interface for Vision-Language Models and AI agents.
-Combines lifecycle, vision, keyboard, mouse, guest execution, and snapshots.
+Combines lifecycle, vision, keyboard, mouse, guest execution, snapshots,
+compound batch actions, and collaborative presence broadcasting.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from vde_vlm.vbox import (
     find_vboxmanage,
@@ -22,7 +23,10 @@ from vde_vlm.vbox import (
 )
 from vde_vlm.vision import (
     add_coordinate_grid,
+    clean_temp_artifacts,
     compare_screenshots,
+    draw_agent_cursor,
+    get_rolling_screen_path,
     inspect_screen_state,
     take_screenshot,
     transcribe_screen,
@@ -31,6 +35,7 @@ from vde_vlm.keyboard import press_key, type_string
 from vde_vlm.mouse import click, move_to, scroll
 from vde_vlm.guest import copy_from_guest, copy_to_guest, run_guest_command
 from vde_vlm.snapshots import delete_snapshot, list_snapshots, restore_snapshot, safe_checkpoint, take_snapshot
+from vde_vlm.macro import MacroStep, execute_batch
 
 logger = logging.getLogger(__name__)
 
@@ -69,16 +74,23 @@ class VBoxVM:
         return get_vm_info(self.name_or_uuid)
 
     # -------------------------------------------------------------------------
+    # Collaborative Presence
+    # -------------------------------------------------------------------------
+
+    def notify_agent_cursor(self, x: int, y: int, is_click: bool = True, label: str = "Gemini"):
+        """Notify the live web viewer of an agent cursor event."""
+        try:
+            from vde_vlm.web_viewer import notify_agent_action
+            notify_agent_action(x, y, is_click=is_click, label=label)
+        except Exception:
+            pass
+
+    # -------------------------------------------------------------------------
     # Lifecycle Management
     # -------------------------------------------------------------------------
 
     def start(self, headless: bool = True, wait_seconds: float = 3.0) -> bool:
-        """Start the virtual machine.
-
-        Args:
-            headless: If True, boots without a host desktop window (GUI-less).
-            wait_seconds: Initial settling time after boot command.
-        """
+        """Start the virtual machine."""
         if self.is_running:
             logger.info(f"VM '{self.name_or_uuid}' is already running.")
             return True
@@ -90,12 +102,7 @@ class VBoxVM:
         return self.is_running
 
     def stop(self, mode: str = "poweroff", wait_seconds: float = 2.0) -> bool:
-        """Stop or pause the virtual machine.
-
-        Args:
-            mode: 'poweroff', 'savestate', 'acpipowerbutton', or 'pause'.
-            wait_seconds: Settling time.
-        """
+        """Stop or pause the virtual machine."""
         if not self.is_running and mode != "savestate":
             logger.info(f"VM '{self.name_or_uuid}' is not running.")
             return True
@@ -129,41 +136,56 @@ class VBoxVM:
         with_grid: bool = False,
         grid_step: int = 100,
         display: int = 0,
+        use_rolling_cache: bool = True,
+        style: str = "stitch",
     ) -> str:
-        """Capture a screenshot of the VM screen.
+        """Capture a screenshot of the VM screen with zero disk shredding.
 
         Args:
-            output_path: Path to write the PNG file.
-            with_grid: If True, also generates a coordinate-grid overlay.
-            grid_step: Pixel distance between grid lines.
-            display: VirtualBox display index.
+            output_path: Path to write PNG file. If None, overwrites rolling buffer.
+            with_grid: If True, also overlays subtle non-obtrusive coordinate grid.
+            grid_step: Distance in pixels between grid marks.
+            display: Display index.
+            use_rolling_cache: If True, uses persistent rolling file.
+            style: 'stitch' for sleek subtle guides, 'dense' for high-contrast lines.
 
         Returns:
-            Path to the captured screenshot (or grid screenshot if with_grid is True).
+            Path to the captured screenshot.
         """
-        screen_file = take_screenshot(self.name_or_uuid, output_path=output_path, display=display)
+        screen_file = take_screenshot(
+            self.name_or_uuid,
+            output_path=output_path,
+            display=display,
+            use_rolling_cache=use_rolling_cache,
+        )
         self._last_screenshot = screen_file
 
         if with_grid:
-            grid_file = add_coordinate_grid(screen_file, grid_step=grid_step)
+            grid_dest = get_rolling_screen_path(self.name_or_uuid, annotated=True) if use_rolling_cache else None
+            grid_file = add_coordinate_grid(screen_file, output_path=grid_dest, grid_step=grid_step, style=style)
             self._last_grid_screenshot = grid_file
             return grid_file
 
         return screen_file
 
-    def observe(self, grid: bool = True, ocr: bool = False) -> Dict[str, Any]:
-        """Produce a complete multimodal observation of the VM state.
+    def observe(
+        self,
+        grid: bool = True,
+        ocr: bool = False,
+        use_rolling_cache: bool = True,
+    ) -> Dict[str, Any]:
+        """Produce a complete multimodal observation of the VM state with zero disk clutter.
 
         Returns:
             Dictionary containing state, resolution, screenshot paths, brightness,
             and optional OCR transcription.
         """
-        raw_screen = self.screenshot(with_grid=False)
+        raw_screen = self.screenshot(with_grid=False, use_rolling_cache=use_rolling_cache)
         metrics = inspect_screen_state(raw_screen)
 
         grid_path = None
         if grid:
-            grid_path = add_coordinate_grid(raw_screen)
+            grid_path = self.screenshot(with_grid=True, use_rolling_cache=use_rolling_cache)
             self._last_grid_screenshot = grid_path
 
         obs: Dict[str, Any] = {
@@ -193,35 +215,26 @@ class VBoxVM:
         button: str = "left",
         double: bool = False,
         verify_change: bool = False,
+        broadcast_cursor: bool = True,
     ) -> Dict[str, Any]:
-        """Click at screen coordinates (x, y).
+        """Click at screen coordinates (x, y)."""
+        if broadcast_cursor:
+            self.notify_agent_cursor(x, y, is_click=True)
 
-        Args:
-            x: X pixel coordinate.
-            y: Y pixel coordinate.
-            button: 'left', 'right', or 'middle'.
-            double: If True, performs a double-click.
-            verify_change: If True, compares screenshots before and after click.
-
-        Returns:
-            Dict with execution status and visual change ratio.
-        """
         before_shot = None
         if verify_change:
             before_shot = self.screenshot()
 
-        # Resolution inference
         res_x, res_y = 1920, 1080
         if self._last_screenshot and os.path.exists(self._last_screenshot):
             m = inspect_screen_state(self._last_screenshot)
             res_x, res_y = m["width"], m["height"]
 
         success = click(self.name_or_uuid, x, y, button=button, screen_width=res_x, screen_height=res_y, double=double)
-
         res = {"success": success, "x": x, "y": y, "button": button}
 
         if verify_change and before_shot:
-            time.sleep(0.5)
+            time.sleep(0.4)
             after_shot = self.screenshot()
             diff_ratio, has_changed = compare_screenshots(before_shot, after_shot)
             res["changed"] = has_changed
@@ -236,6 +249,22 @@ class VBoxVM:
     def press_key(self, key_or_chord: str) -> None:
         """Press a special key or chord (e.g. 'enter', 'super', 'ctrl+alt+t', 'esc')."""
         press_key(self.name_or_uuid, key_or_chord)
+
+    # -------------------------------------------------------------------------
+    # Compound Batch Actions & Macros
+    # -------------------------------------------------------------------------
+
+    def batch(self, steps: List[Union[Dict[str, Any], MacroStep, str]], verify: bool = True) -> Dict[str, Any]:
+        """Execute a compound sequence of actions in one atomic call.
+
+        Example steps:
+            ['type:echo hello|enter', 'wait:0.5', 'click:450,720']
+        """
+        return execute_batch(self, steps, verify_final_change=verify)
+
+    def macro(self, *steps: str) -> Dict[str, Any]:
+        """Shorthand macro runner using string notation."""
+        return self.batch(list(steps))
 
     # -------------------------------------------------------------------------
     # Guest OS Commands & Files

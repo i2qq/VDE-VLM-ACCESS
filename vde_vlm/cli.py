@@ -2,7 +2,8 @@
 vde_vlm.cli
 ~~~~~~~~~~~
 Command-Line Interface for VDE-VLM-ACCESS.
-Enables agents and developers to interact with VirtualBox VMs directly via terminal.
+Enables agents and developers to interact with VirtualBox VMs directly via terminal,
+launch the collaborative live studio, and execute compound macro sequences.
 """
 
 from __future__ import annotations
@@ -14,7 +15,9 @@ import sys
 from typing import List, Optional
 
 from vde_vlm.core import VBoxVM
+from vde_vlm.macro import execute_batch
 from vde_vlm.vbox import list_vms
+from vde_vlm.vision import clean_temp_artifacts
 
 
 def main(args: Optional[List[str]] = None) -> int:
@@ -49,8 +52,8 @@ def main(args: Optional[List[str]] = None) -> int:
     # screenshot
     p_shot = subparsers.add_parser("screenshot", help="Capture a screenshot of the VM")
     p_shot.add_argument("vm", help="VM name or UUID")
-    p_shot.add_argument("-o", "--output", help="Output file path (default: temp PNG)")
-    p_shot.add_argument("--grid", action="store_true", help="Include coordinate grid overlay for VLM inspection")
+    p_shot.add_argument("-o", "--output", help="Output file path (default: rolling cache)")
+    p_shot.add_argument("--grid", action="store_true", help="Include subtle coordinate grid overlay")
     p_shot.add_argument("--step", type=int, default=100, help="Grid step size in pixels (default: 100)")
 
     # observe
@@ -80,6 +83,20 @@ def main(args: Optional[List[str]] = None) -> int:
     p_key.add_argument("vm", help="VM name or UUID")
     p_key.add_argument("chord", help="Key or chord to press")
 
+    # macro / batch
+    p_macro = subparsers.add_parser("macro", help="Execute compound sequence of actions in one atomic turn")
+    p_macro.add_argument("vm", help="VM name or UUID")
+    p_macro.add_argument("steps", nargs="+", help="Shorthand actions (e.g. 'type:hello|enter' 'wait:0.5' 'click:450,720')")
+
+    p_batch = subparsers.add_parser("batch", help="Execute compound batch from JSON file or string")
+    p_batch.add_argument("vm", help="VM name or UUID")
+    p_batch.add_argument("json_data", help="JSON string or path to JSON file containing action steps")
+
+    # live studio
+    p_live = subparsers.add_parser("live", help="Launch the Google Stitch-style collaborative web viewer (Port 7891)")
+    p_live.add_argument("--port", type=int, default=7891, help="Web server port (default: 7891)")
+    p_live.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+
     # exec
     p_exec = subparsers.add_parser("exec", help="Run a bash command inside the guest VM")
     p_exec.add_argument("vm", help="VM name or UUID")
@@ -87,7 +104,7 @@ def main(args: Optional[List[str]] = None) -> int:
     p_exec.add_argument("-u", "--user", default="victor", help="Guest username (default: victor)")
     p_exec.add_argument("-p", "--password", default="", help="Guest password")
 
-    # upload
+    # upload / download
     p_up = subparsers.add_parser("upload", help="Copy a host file/directory into the guest VM")
     p_up.add_argument("vm", help="VM name or UUID")
     p_up.add_argument("host_src", help="Host path")
@@ -95,7 +112,6 @@ def main(args: Optional[List[str]] = None) -> int:
     p_up.add_argument("-u", "--user", default="victor")
     p_up.add_argument("-p", "--password", default="")
 
-    # download
     p_down = subparsers.add_parser("download", help="Copy a guest file/directory to the host")
     p_down.add_argument("vm", help="VM name or UUID")
     p_down.add_argument("guest_src", help="Guest source path")
@@ -110,7 +126,10 @@ def main(args: Optional[List[str]] = None) -> int:
     p_snap.add_argument("name", nargs="?", help="Snapshot name")
     p_snap.add_argument("-d", "--desc", help="Snapshot description")
 
-    # serve
+    # clean
+    subparsers.add_parser("clean", help="Clean up stale temporary screenshot files from system temp")
+
+    # serve (MCP)
     subparsers.add_parser("serve", help="Run the MCP stdio tool server")
 
     parsed = parser.parse_args(args)
@@ -129,6 +148,16 @@ def main(args: Optional[List[str]] = None) -> int:
             for m in vms:
                 vm = VBoxVM(m["name"])
                 print(f"{m['name']:<30} {vm.state:<15} {m['uuid']}")
+            return 0
+
+        elif parsed.command == "clean":
+            cleaned = clean_temp_artifacts()
+            print(f"Cleaned {cleaned} temporary files from disk.")
+            return 0
+
+        elif parsed.command == "live":
+            from vde_vlm.web_viewer import run_web_viewer
+            run_web_viewer(host=parsed.host, port=parsed.port)
             return 0
 
         elif parsed.command == "serve":
@@ -184,6 +213,19 @@ def main(args: Optional[List[str]] = None) -> int:
         elif parsed.command == "key":
             vm.press_key(parsed.chord)
             print(f"Pressed chord: {parsed.chord}")
+
+        elif parsed.command == "macro":
+            res = vm.macro(*parsed.steps)
+            print(json.dumps(res, indent=2))
+
+        elif parsed.command == "batch":
+            if os.path.isfile(parsed.json_data):
+                with open(parsed.json_data, "r", encoding="utf-8") as f:
+                    steps = json.load(f)
+            else:
+                steps = json.loads(parsed.json_data)
+            res = vm.batch(steps)
+            print(json.dumps(res, indent=2))
 
         elif parsed.command == "exec":
             code, stdout, stderr = vm.exec(parsed.cmd, username=parsed.user, password=parsed.password, check=False)
