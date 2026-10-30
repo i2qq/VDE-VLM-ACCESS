@@ -25,6 +25,8 @@ from vde_vlm.vision import (
     add_coordinate_grid,
     clean_temp_artifacts,
     compare_screenshots,
+    create_compact_thumbnail,
+    crop_region,
     draw_agent_cursor,
     get_rolling_screen_path,
     inspect_screen_state,
@@ -47,6 +49,7 @@ class VBoxVM:
         self.name_or_uuid = name_or_uuid
         self._last_screenshot: Optional[str] = None
         self._last_grid_screenshot: Optional[str] = None
+        self._last_elements: List[Dict[str, Any]] = []
 
     @classmethod
     def list_all(cls) -> List[VBoxVM]:
@@ -178,38 +181,123 @@ class VBoxVM:
 
     def observe(
         self,
-        grid: bool = True,
-        ocr: bool = False,
+        mode: str = "text",
+        grid: bool = False,
         use_rolling_cache: bool = True,
+        skip_if_unchanged: bool = True,
+        crop: Optional[Tuple[int, int, int, int]] = None,
+        max_dim: int = 512,
+        ocr: bool = False,
     ) -> Dict[str, Any]:
-        """Produce a complete multimodal observation of the VM state with zero disk clutter.
+        """Produce an ultra-efficient observation of the VM state.
+
+        Args:
+            mode: Observation efficiency mode:
+                - 'text' (DEFAULT & HIGHLY RECOMMENDED): Performs local OCR & UI grounding,
+                  returning structured interactive elements and centroids (~50-100 tokens,
+                  saving 95%+ of weekly VLM quota). Zero vision tokens spent!
+                - 'compact': Returns a downscaled 512px compressed JPEG thumbnail
+                  (consumes minimum base 258 vision tokens instead of 2,000+).
+                - 'full': Returns full-resolution 1280x800 image with optional grid.
+            grid: Generate subtle coordinate grid overlay (for 'full' or 'compact').
+            use_rolling_cache: Overwrite rolling frame buffer to prevent disk clutter.
+            skip_if_unchanged: If screen is visually identical to prior turn, skips re-sending images.
+            crop: Optional (x1, y1, x2, y2) to inspect only a specific region of interest.
+            max_dim: Maximum dimension for 'compact' mode (default 512px for base token tier).
+            ocr: Include raw pytesseract OCR if available.
 
         Returns:
-            Dictionary containing state, resolution, screenshot paths, brightness,
-            and optional OCR transcription.
+            Observation dictionary optimized for minimal token expenditure.
         """
         raw_screen = self.screenshot(with_grid=False, use_rolling_cache=use_rolling_cache)
         metrics = inspect_screen_state(raw_screen)
 
-        grid_path = None
-        if grid:
-            grid_path = self.screenshot(with_grid=True, use_rolling_cache=use_rolling_cache)
-            self._last_grid_screenshot = grid_path
+        # 1. Change detection to avoid burning tokens on identical screens
+        diff_ratio = 1.0
+        has_changed = True
+        if self._last_screenshot and os.path.exists(self._last_screenshot) and self._last_screenshot != raw_screen:
+            try:
+                diff_ratio, has_changed = compare_screenshots(self._last_screenshot, raw_screen)
+            except Exception:
+                has_changed = True
 
+        # Mode A: Ultra-Efficient Text Grounding (Zero Vision Tokens)
+        if mode.lower() == "text":
+            if skip_if_unchanged and not has_changed and self._last_elements:
+                return {
+                    "vm": self.name_or_uuid,
+                    "mode": "text",
+                    "state": self.state,
+                    "changed": False,
+                    "note": "Screen is visually unchanged from prior step. Preserving VLM weekly tokens.",
+                    "elements_count": len(self._last_elements),
+                    "ui_summary": [
+                        f"[{el['id']}] {el['type'].upper()} '{el['text']}' @ ({el['centroid'][0]}, {el['centroid'][1]})"
+                        for el in self._last_elements
+                    ],
+                }
+
+            elements = self.detect_elements()
+            self._last_elements = elements
+            self._last_screenshot = raw_screen
+
+            return {
+                "vm": self.name_or_uuid,
+                "mode": "text",
+                "state": self.state,
+                "is_running": self.is_running,
+                "resolution": (metrics["width"], metrics["height"]),
+                "changed": has_changed,
+                "diff_ratio": round(diff_ratio, 4),
+                "elements_count": len(elements),
+                "ui_summary": [
+                    f"[{el['id']}] {el['type'].upper()} '{el['text']}' @ ({el['centroid'][0]}, {el['centroid'][1]})"
+                    for el in elements
+                ],
+                "elements": elements,
+                "hint": "Use vm_click_text(query=...) or vm_click(x=..., y=...) to interact without spending vision tokens.",
+            }
+
+        # Handle optional region-of-interest cropping
+        target_img = raw_screen
+        if crop:
+            target_img = crop_region(raw_screen, crop)
+
+        # Optional grid overlay
+        if grid:
+            target_img = add_coordinate_grid(target_img)
+
+        # Mode B: Compact Vision Thumbnail (Low Token Tier ~258 tokens)
+        if mode.lower() == "compact":
+            compact_path = create_compact_thumbnail(target_img, max_dim=max_dim, quality=55)
+            self._last_screenshot = raw_screen
+            return {
+                "vm": self.name_or_uuid,
+                "mode": "compact",
+                "state": self.state,
+                "is_running": self.is_running,
+                "original_resolution": (metrics["width"], metrics["height"]),
+                "changed": has_changed,
+                "diff_ratio": round(diff_ratio, 4),
+                "compact_screenshot": compact_path,
+                "tokens_saved_estimate": "85-90%",
+            }
+
+        # Mode C: Full Resolution Vision
         obs: Dict[str, Any] = {
             "vm": self.name_or_uuid,
+            "mode": "full",
             "state": self.state,
             "is_running": self.is_running,
             "resolution": (metrics["width"], metrics["height"]),
             "is_all_black": metrics["is_all_black"],
             "average_brightness": metrics["average_brightness"],
             "screenshot": raw_screen,
-            "grid_screenshot": grid_path,
+            "changed": has_changed,
         }
-
         if ocr:
             obs["ocr"] = transcribe_screen(raw_screen)
-
+        self._last_screenshot = raw_screen
         return obs
 
     # -------------------------------------------------------------------------

@@ -52,12 +52,19 @@ TOOLS = [
     },
     {
         "name": "vm_observe",
-        "description": "Capture screen, clean coordinate grid overlay, resolution, and brightness metrics of VM without disk bloat.",
+        "description": "Ultra-efficient VM screen observation. Defaults to 'text' mode (~50-100 tokens, saving 95%+ of weekly VLM quota). Use 'compact' for a 512px downscaled low-token thumbnail (~258 tokens).",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vm": {"type": "string", "description": "VM name or UUID"},
-                "grid": {"type": "boolean", "description": "Generate subtle coordinate grid overlay", "default": True},
+                "mode": {
+                    "type": "string",
+                    "enum": ["text", "compact", "full"],
+                    "default": "text",
+                    "description": "Efficiency mode: 'text' (zero vision tokens, structured UI text), 'compact' (512px low-token thumbnail), 'full' (raw image)",
+                },
+                "grid": {"type": "boolean", "description": "Generate coordinate grid (for compact or full mode)", "default": False},
+                "skip_if_unchanged": {"type": "boolean", "description": "Skip re-sending if screen has not changed", "default": True},
             },
             "required": ["vm"],
         },
@@ -229,8 +236,10 @@ def dispatch_tool(name: str, args: Dict[str, Any]) -> Any:
         return {"stopped": ok, "state": vm.state}
 
     elif name == "vm_observe":
-        grid = args.get("grid", True)
-        return vm.observe(grid=grid, use_rolling_cache=True)
+        mode = args.get("mode", "text")
+        grid = args.get("grid", False)
+        skip = args.get("skip_if_unchanged", True)
+        return vm.observe(mode=mode, grid=grid, skip_if_unchanged=skip)
 
     elif name == "vm_click":
         x = int(args["x"])

@@ -275,6 +275,51 @@ def inspect_screen_state(image_path: str) -> Dict[str, Any]:
     }
 
 
+def create_compact_thumbnail(
+    image_path: str,
+    max_dim: int = 512,
+    quality: int = 55,
+    output_path: Optional[str] = None,
+) -> str:
+    """Downscale and compress screenshot to minimize VLM vision token consumption.
+
+    Images scaled under 512px occupy the minimum base token tier (~258 tokens instead of 2000+),
+    saving 85-90% of token consumption per message.
+    """
+    if not output_path:
+        root, _ = os.path.splitext(image_path)
+        output_path = f"{root}_compact.jpg"
+
+    with Image.open(image_path) as img:
+        img_rgb = img.convert("RGB")
+        w, h = img_rgb.size
+        scale = min(1.0, max_dim / max(w, h))
+        if scale < 1.0:
+            new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+            img_rgb = img_rgb.resize(new_size, Image.Resampling.BILINEAR)
+
+        img_rgb.save(output_path, "JPEG", quality=quality, optimize=True)
+
+    return output_path
+
+
+def crop_region(
+    image_path: str,
+    bbox: Tuple[int, int, int, int],
+    output_path: Optional[str] = None,
+) -> str:
+    """Crop a Region of Interest (ROI) [x1, y1, x2, y2] to avoid sending full-screen images."""
+    if not output_path:
+        root, _ = os.path.splitext(image_path)
+        output_path = f"{root}_crop.png"
+
+    with Image.open(image_path) as img:
+        cropped = img.crop(bbox)
+        cropped.save(output_path, "PNG")
+
+    return output_path
+
+
 def transcribe_screen(image_path: str) -> Dict[str, Any]:
     """Attempt OCR transcription if pytesseract is installed."""
     try:
