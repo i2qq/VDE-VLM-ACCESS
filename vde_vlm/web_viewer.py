@@ -331,13 +331,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <button id="btn-stop" class="danger">⏹ Power Off</button>
     </div>
 
-    <!-- Quick Keys -->
+    <!-- Quick Keys Ribbon -->
     <div class="key-ribbon">
+      <button onclick="sendKey('up')" title="Up Arrow">▲ Up</button>
+      <button onclick="sendKey('down')" title="Down Arrow">▼ Down</button>
+      <button onclick="sendKey('space')" title="Space">␣ Space</button>
+      <button onclick="sendKey('enter')" title="Enter">↵ Enter</button>
+      <button onclick="sendKey('tab')" title="Tab">⇥ Tab</button>
+      <button onclick="sendKey('esc')" title="Escape">Esc</button>
       <button onclick="sendKey('super')" title="Windows / Super Key">⊞ Super</button>
       <button onclick="sendKey('ctrl+alt+t')" title="Terminal shortcut">Terminal</button>
-      <button onclick="sendKey('enter')">↵ Enter</button>
-      <button onclick="sendKey('tab')">⇥ Tab</button>
-      <button onclick="sendKey('esc')">Esc</button>
     </div>
 
     <div class="toolbar">
@@ -446,11 +449,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     // Screen coordinate mapping
     function getVMPixelCoords(e) {
       const rect = vmScreen.getBoundingClientRect();
-      const scaleX = vmScreen.naturalWidth / rect.width;
-      const scaleY = vmScreen.naturalHeight / rect.height;
+      const natW = vmScreen.naturalWidth > 0 ? vmScreen.naturalWidth : 1280;
+      const natH = vmScreen.naturalHeight > 0 ? vmScreen.naturalHeight : 800;
+      const scaleX = natW / rect.width;
+      const scaleY = natH / rect.height;
       const x = Math.round((e.clientX - rect.left) * scaleX);
       const y = Math.round((e.clientY - rect.top) * scaleY);
-      return { x: Math.max(0, x), y: Math.max(0, y) };
+      return { x: Math.max(0, x), y: Math.max(0, y), width: natW, height: natH };
     }
 
     vmScreen.onmousemove = (e) => {
@@ -460,33 +465,50 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     // User direct click
     vmScreen.onmousedown = async (e) => {
-      const { x, y } = getVMPixelCoords(e);
+      const { x, y, width, height } = getVMPixelCoords(e);
       const btn = e.button === 2 ? "right" : (e.button === 1 ? "middle" : "left");
       await fetch("/api/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "click", vm: currentVM, x, y, button: btn })
+        body: JSON.stringify({ type: "click", vm: currentVM, x, y, button: btn, width, height })
       });
     };
     vmScreen.oncontextmenu = (e) => e.preventDefault();
 
-    // User keyboard input on focused screen
-    vmScreen.onkeydown = async (e) => {
-      if (e.target !== vmScreen) return;
-      e.preventDefault();
-      let key = e.key.toLowerCase();
-      if (key === " ") key = "space";
-      else if (key === "enter") key = "enter";
-      else if (key === "backspace") key = "backspace";
-      else if (key === "tab") key = "tab";
-      else if (key === "escape") key = "esc";
+    // Global keyboard listener for seamless real-time VM control
+    window.addEventListener("keydown", async (e) => {
+      // Don't intercept if user is typing inside the macro drawer textarea
+      if (e.target && (e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT")) return;
 
-      await fetch("/api/action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "key", vm: currentVM, chord: key })
-      });
-    };
+      const key = e.key;
+      const specialKeys = {
+        "ArrowUp": "up",
+        "ArrowDown": "down",
+        "ArrowLeft": "left",
+        "ArrowRight": "right",
+        "Enter": "enter",
+        "Escape": "esc",
+        "Backspace": "backspace",
+        "Tab": "tab",
+        " ": "space",
+        "Meta": "super",
+        "F1": "f1", "F2": "f2", "F3": "f3", "F4": "f4", "F5": "f5", "F6": "f6",
+        "F7": "f7", "F8": "f8", "F9": "f9", "F10": "f10", "F11": "f11", "F12": "f12",
+      };
+
+      if (specialKeys[key]) {
+        e.preventDefault();
+        await sendKey(specialKeys[key]);
+      } else if (key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        // Plain character typing
+        e.preventDefault();
+        await fetch("/api/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "type", vm: currentVM, text: key })
+        });
+      }
+    });
 
     async function sendKey(chord) {
       await fetch("/api/action", {
@@ -633,8 +655,12 @@ async def execute_action(req: Request):
         x = int(data["x"])
         y = int(data["y"])
         btn = data.get("button", "left")
+        w = int(data.get("width", 1280))
+        h = int(data.get("height", 800))
         double = bool(data.get("double", False))
         notify_agent_action(x, y, is_click=True, label="User")
+        from vde_vlm.session_manager import VBoxSessionManager
+        VBoxSessionManager.get_instance().mouse_click(vm_name, x, y, button=btn, width=w, height=h, double=double)
         vm.click(x, y, button=btn, double=double)
         return {"status": "clicked", "x": x, "y": y}
 

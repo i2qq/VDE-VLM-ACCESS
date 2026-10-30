@@ -92,24 +92,17 @@ def click(
     x: int,
     y: int,
     button: str = "left",
-    screen_width: int = 1920,
-    screen_height: int = 1080,
+    screen_width: int = 1280,
+    screen_height: int = 800,
     double: bool = False,
 ) -> bool:
-    """Perform a mouse click at absolute coordinates (x, y).
+    """Perform a mouse click at absolute coordinates (x, y)."""
+    from vde_vlm.session_manager import VBoxSessionManager
+    sm = VBoxSessionManager.get_instance()
+    ok = sm.mouse_click(vm_name_or_uuid, x, y, button=button, width=screen_width, height=screen_height, double=double)
+    if ok:
+        return True
 
-    Args:
-        vm_name_or_uuid: Target VM.
-        x: X coordinate in pixels.
-        y: Y coordinate in pixels.
-        button: 'left', 'right', or 'middle'.
-        screen_width: Target display width.
-        screen_height: Target display height.
-        double: If True, performs a double click.
-
-    Returns:
-        True if executed.
-    """
     btn_mask = BUTTON_LEFT
     if button.lower() == "right":
         btn_mask = BUTTON_RIGHT
@@ -138,21 +131,7 @@ def click(
             if session:
                 session.UnlockMachine()
 
-    # Fallback via guestcontrol xdotool if available
-    try:
-        from vde_vlm.guest import run_guest_command
-        btn_num = 1 if btn_mask == BUTTON_LEFT else (3 if btn_mask == BUTTON_RIGHT else 2)
-        click_type = "click --repeat 2" if double else "click"
-        run_guest_command(
-            vm_name_or_uuid,
-            f"DISPLAY=:0 xdotool mousemove {x} {y} {click_type} {btn_num}",
-            check=False,
-            timeout=5.0,
-        )
-        return True
-    except Exception as exc:
-        logger.warning(f"Failed to execute mouse click via fallback: {exc}")
-        return False
+    return False
 
 
 def scroll(
