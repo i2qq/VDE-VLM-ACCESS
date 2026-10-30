@@ -36,10 +36,10 @@ app = FastAPI(title="VDE-VLM Collaborative Studio", version="2.0.0")
 _active_sockets: Set[WebSocket] = set()
 
 # Global state for active VM and collaborative agent cursor
-_current_vm_name = os.environ.get("VDE_DEFAULT_VM", "vmvdebox6.1")
+_current_vm_name = os.environ.get("VDE_DEFAULT_VM", "vmvdebox7")
 _agent_cursor_state: Dict[str, Any] = {
-    "x": 0,
-    "y": 0,
+    "x": 300,
+    "y": 200,
     "label": "Gemini",
     "is_click": False,
     "last_updated": 0,
@@ -48,6 +48,10 @@ _agent_cursor_state: Dict[str, Any] = {
 
 def get_current_vm() -> VBoxVM:
     global _current_vm_name
+    vms = list_vms()
+    names = [m["name"] for m in vms]
+    if _current_vm_name not in names and names:
+        _current_vm_name = names[0]
     return VBoxVM(_current_vm_name)
 
 
@@ -338,6 +342,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     <div class="toolbar">
       <button id="btn-grid" onclick="toggleGrid()">📐 Grid</button>
+      <button id="btn-demo" class="primary" onclick="triggerAgentDemo()">✨ Demo Agent Cursor</button>
       <button id="btn-macro-toggle" onclick="toggleMacroDrawer()">⚡ Compound Macro</button>
     </div>
   </header>
@@ -491,6 +496,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       });
     }
 
+    async function triggerAgentDemo() {
+      await fetch("/api/demo_agent", { method: "POST" });
+    }
+
     function toggleGrid() {
       const isVisible = gridOverlay.style.display === "block";
       gridOverlay.style.display = isVisible ? "none" : "block";
@@ -522,11 +531,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         if (data.type === "agent_cursor") {
           // Render Google Stitch-style collaborative cursor
           const rect = vmScreen.getBoundingClientRect();
-          const scaleX = rect.width / (vmScreen.naturalWidth || 1);
-          const scaleY = rect.height / (vmScreen.naturalHeight || 1);
+          const natW = vmScreen.naturalWidth > 0 ? vmScreen.naturalWidth : 720;
+          const natH = vmScreen.naturalHeight > 0 ? vmScreen.naturalHeight : 400;
+          const scaleX = (rect.width > 0 ? rect.width : 720) / natW;
+          const scaleY = (rect.height > 0 ? rect.height : 400) / natH;
 
-          const screenX = data.x * scaleX;
-          const screenY = data.y * scaleY;
+          const screenX = Math.round(data.x * scaleX);
+          const screenY = Math.round(data.y * scaleY);
 
           agentCursor.style.transform = `translate3d(${screenX}px, ${screenY}px, 0)`;
           agentLabel.textContent = `🤖 ${data.label} (${data.x}, ${data.y})`;
@@ -639,6 +650,25 @@ async def execute_action(req: Request):
         return {"status": "typed", "text": text}
 
     raise HTTPException(status_code=400, detail=f"Unknown action: {action_type}")
+
+
+@app.post("/api/demo_agent")
+async def trigger_agent_demo():
+    """Simulate a live demonstration of Gemini agent movements and clicks."""
+    async def _tour():
+        path = [
+            (250, 120, "Inspecting Header", False),
+            (360, 200, "Targeting GRUB Menu", True),
+            (360, 230, "Selecting Safe Mode", True),
+            (180, 320, "Reading Instructions", False),
+            (500, 200, "Confirming Coordinates", True),
+        ]
+        for x, y, label, is_click in path:
+            notify_agent_action(x, y, is_click=is_click, label=f"Gemini: {label}")
+            await asyncio.sleep(1.2)
+
+    asyncio.create_task(_tour())
+    return {"status": "demo_started"}
 
 
 @app.post("/api/batch")
