@@ -2,7 +2,7 @@
 
 > **Empowering Vision-Language Models (Gemini, Claude, Antigravity, local VLMs) with direct eyes, hands, collaborative presence, and control over VirtualBox Virtual Machines.**
 
-This repository enables autonomous coding agents and human developers working on the [Victors Desktop Environment (VDE)](https://github.com/i2qq/VDE) project to boot, observe, collaboratively interact with, test, and debug Linux desktop environments inside Oracle VirtualBox.
+This repository enables autonomous coding agents and human developers working on the [Victorious Desktop Environment (VDE)](https://github.com/i2qq/VDE) project to boot, observe, collaboratively interact with, test, and debug Linux desktop environments inside Oracle VirtualBox.
 
 ---
 
