@@ -203,13 +203,19 @@ def draw_grounded_overlay(
     image_path: str,
     elements: Optional[List[Dict[str, Any]]] = None,
     output_path: Optional[str] = None,
+    transparent_bg: bool = False,
+    max_dim: Optional[int] = None,
 ) -> str:
-    """Render Set-of-Marks (SoM) bounding boxes and text badges onto screenshot.
+    """Render Set-of-Marks (SoM) bounding boxes and text badges.
 
     Args:
         image_path: Source image.
         elements: Pre-detected elements or None to run detection.
         output_path: Target save path.
+        transparent_bg: If True, renders onto a completely transparent (RGBA) canvas
+                       rather than the original desktop screenshot. Consumes far fewer
+                       tokens and acts as a high-contrast visual spatial map.
+        max_dim: Optional max dimension (e.g. 512) to downscale the resulting map.
 
     Returns:
         Path to generated annotated image.
@@ -228,7 +234,7 @@ def draw_grounded_overlay(
 
     # Colors
     box_color = (6, 182, 212, 230)       # Vivid Cyan
-    fill_color = (6, 182, 212, 45)       # Translucent cyan
+    fill_color = (6, 182, 212, 45) if not transparent_bg else (6, 182, 212, 25)  # Translucent cyan
     text_bg = (15, 23, 42, 235)          # Dark slate badge
     text_fg = (255, 255, 255, 255)       # Pure white
     dot_color = (168, 85, 247, 255)      # Purple centroid dot
@@ -250,7 +256,19 @@ def draw_grounded_overlay(
         draw.rectangle([x1, badge_y, x1 + badge_w, badge_y + 13], fill=text_bg)
         draw.text((x1 + 4, badge_y), tag, fill=text_fg, font=font)
 
-    result = Image.alpha_composite(base, overlay).convert("RGB")
-    out_file = output_path or image_path.replace(".png", "_grounded.png")
-    result.save(out_file, format="PNG")
+    if transparent_bg:
+        result_img = overlay
+        default_suffix = "_som_map.png"
+    else:
+        result_img = Image.alpha_composite(base, overlay).convert("RGB")
+        default_suffix = "_grounded.png"
+
+    if max_dim is not None and max(result_img.size) > max_dim:
+        scale = max_dim / max(result_img.size)
+        new_w = max(1, int(result_img.width * scale))
+        new_h = max(1, int(result_img.height * scale))
+        result_img = result_img.resize((new_w, new_h), Image.Resampling.BILINEAR)
+
+    out_file = output_path or image_path.replace(".png", default_suffix)
+    result_img.save(out_file, format="PNG")
     return out_file

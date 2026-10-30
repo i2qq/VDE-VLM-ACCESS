@@ -59,7 +59,7 @@ def main(args: Optional[List[str]] = None) -> int:
     # observe
     p_obs = subparsers.add_parser("observe", help="Ultra-efficient VM observation (text grounding, compact, or full)")
     p_obs.add_argument("vm", help="VM name or UUID")
-    p_obs.add_argument("-m", "--mode", choices=["text", "compact", "full"], default="text", help="Observation mode: 'text' (default, ~50 tokens), 'compact' (512px low-token thumbnail), 'full' (raw image)")
+    p_obs.add_argument("-m", "--mode", choices=["text", "compact", "map", "full", "grounded"], default="text", help="Observation mode: 'text' (default, ~50 tokens), 'map' (SoM on transparent background), 'compact' (512px thumbnail), 'full' (token shredder), 'grounded' (screenshot with SoM)")
     p_obs.add_argument("--crop", nargs=4, type=int, metavar=("X1", "Y1", "X2", "Y2"), help="Crop region of interest [x1 y1 x2 y2]")
     p_obs.add_argument("--no-grid", action="store_true", help="Omit coordinate grid overlay")
     p_obs.add_argument("--ocr", action="store_true", help="Attempt OCR transcription of screen")

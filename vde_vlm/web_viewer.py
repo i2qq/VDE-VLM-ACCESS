@@ -51,12 +51,14 @@ _agent_cursor_state: Dict[str, Any] = {
 _frame_lock = threading.Lock()
 _cached_screen_bytes: bytes = b""
 _cached_grounded_bytes: bytes = b""
+_cached_map_bytes: bytes = b""
+_cached_compact_bytes: bytes = b""
 _is_grounding_requested: bool = False
 
 
 def _capture_frame_sync(vm_name: str, do_grounding: bool = False):
     """Synchronous background capture worker running in worker thread."""
-    global _cached_screen_bytes, _cached_grounded_bytes
+    global _cached_screen_bytes, _cached_grounded_bytes, _cached_map_bytes, _cached_compact_bytes
     try:
         vm = VBoxVM(vm_name)
         if not vm.is_running:
@@ -69,15 +71,37 @@ def _capture_frame_sync(vm_name: str, do_grounding: bool = False):
             with _frame_lock:
                 _cached_screen_bytes = raw_bytes
 
+            # Compact thumbnail cache
+            try:
+                from vde_vlm.vision import create_compact_thumbnail
+                compact_path = create_compact_thumbnail(shot_path, max_dim=512, quality=60)
+                if os.path.exists(compact_path):
+                    with open(compact_path, "rb") as f:
+                        c_bytes = f.read()
+                    with _frame_lock:
+                        _cached_compact_bytes = c_bytes
+            except Exception as e:
+                logger.debug(f"Compact thumbnail cache error: {e}")
+
             if do_grounding:
                 from vde_vlm.grounding import detect_ui_elements, draw_grounded_overlay
                 elements = detect_ui_elements(shot_path)
-                grounded_path = draw_grounded_overlay(shot_path, elements)
+
+                # 1. Full grounded overlay
+                grounded_path = draw_grounded_overlay(shot_path, elements, transparent_bg=False)
                 if os.path.exists(grounded_path) and os.path.getsize(grounded_path) > 1000:
                     with open(grounded_path, "rb") as f:
                         g_bytes = f.read()
                     with _frame_lock:
                         _cached_grounded_bytes = g_bytes
+
+                # 2. Transparent background SoM map (wireframe on transparent BG)
+                map_path = draw_grounded_overlay(shot_path, elements, transparent_bg=True)
+                if os.path.exists(map_path) and os.path.getsize(map_path) > 1000:
+                    with open(map_path, "rb") as f:
+                        m_bytes = f.read()
+                    with _frame_lock:
+                        _cached_map_bytes = m_bytes
     except Exception as exc:
         logger.debug(f"Background capture error: {exc}")
 
@@ -439,7 +463,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     <div class="toolbar">
       <button id="btn-grid" onclick="toggleGrid()">📐 Grid</button>
-      <button id="btn-grounding" onclick="toggleGrounding()">🎯 Grounding / SoM</button>
       <button id="btn-demo" class="primary" onclick="triggerAgentDemo()">✨ Demo Agent Cursor</button>
       <button id="btn-macro-toggle" onclick="toggleMacroDrawer()">⚡ Compound Macro</button>
     </div>
@@ -772,19 +795,19 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       document.getElementById("btn-grounding").classList.toggle("active", groundingActive);
     }
 
-    // Double-buffered smooth video streaming (zero flickering, no broken image icons)
+    // Double-buffered smooth video streaming for user (always pristine clean VM screen)
     let isFetching = false;
     function fetchNextFrame() {
       if (isFetching) return;
       isFetching = true;
 
-      const endpoint = groundingActive ? "/api/grounded_screen" : "/api/screen";
+      const endpoint = "/api/screen";
       const preloader = new Image();
 
       preloader.onload = () => {
         vmScreen.src = preloader.src;
         isFetching = false;
-        setTimeout(fetchNextFrame, groundingActive ? 900 : 350);
+        setTimeout(fetchNextFrame, 350);
       };
 
       preloader.onerror = () => {
@@ -947,6 +970,53 @@ async def get_grounding(vm: Optional[str] = None):
         return {"vm": target_vm.name_or_uuid, "elements": [], "count": 0}
     elements = await asyncio.to_thread(target_vm.detect_elements)
     return {"vm": target_vm.name_or_uuid, "elements": elements, "count": len(elements)}
+
+
+@app.get("/api/screen_compact")
+async def get_screen_compact(vm: Optional[str] = None):
+    """Serve 512px low-token thumbnail frame for rough agent inspection (~258 tokens)."""
+    global _cached_compact_bytes
+    with _frame_lock:
+        if _cached_compact_bytes:
+            return Response(
+                content=_cached_compact_bytes,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )
+    return await get_screen(vm)
+
+
+@app.get("/api/screen_map")
+@app.get("/api/som_map")
+async def get_screen_map(vm: Optional[str] = None):
+    """Serve Set-of-Marks wireframe map rendered onto a transparent RGBA background for low tokens."""
+    global _is_grounding_requested, _cached_map_bytes
+    _is_grounding_requested = True
+
+    with _frame_lock:
+        if _cached_map_bytes:
+            return Response(
+                content=_cached_map_bytes,
+                media_type="image/png",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )
+
+    target_vm = VBoxVM(vm or _current_vm_name)
+    if target_vm.is_running:
+        obs = await asyncio.to_thread(target_vm.observe, "map", False, True)
+        map_path = obs.get("map_screenshot")
+        if map_path and os.path.exists(map_path):
+            with open(map_path, "rb") as f:
+                data = f.read()
+            with _frame_lock:
+                _cached_map_bytes = data
+            return Response(
+                content=data,
+                media_type="image/png",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )
+
+    return await get_screen(vm)
 
 
 @app.get("/api/grounded_screen")

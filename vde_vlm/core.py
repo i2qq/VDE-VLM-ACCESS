@@ -197,13 +197,17 @@ class VBoxVM:
                   returning structured interactive elements and centroids (~50-100 tokens,
                   saving 95%+ of weekly VLM quota). Zero vision tokens spent!
                 - 'compact': Returns a downscaled 512px compressed JPEG thumbnail
-                  (consumes minimum base 258 vision tokens instead of 2,000+).
-                - 'full': Returns full-resolution 1280x800 image with optional grid.
+                  (consumes base ~258 vision tokens instead of 2,000+) for rough details.
+                - 'map' (or 'som_map'): Returns Set-of-Marks UI element wireframes and badges
+                  rendered on a transparent (RGBA) canvas. Acts as a sparse visual spatial map
+                  without background pixel noise, saving 80-85% tokens.
+                - 'full': Returns full-resolution 1280x800 raw image with optional grid (token shredder).
+                - 'grounded': Full screenshot with Set-of-Marks overlay composited on top.
             grid: Generate subtle coordinate grid overlay (for 'full' or 'compact').
             use_rolling_cache: Overwrite rolling frame buffer to prevent disk clutter.
             skip_if_unchanged: If screen is visually identical to prior turn, skips re-sending images.
             crop: Optional (x1, y1, x2, y2) to inspect only a specific region of interest.
-            max_dim: Maximum dimension for 'compact' mode (default 512px for base token tier).
+            max_dim: Maximum dimension for 'compact' or 'map' mode (default 512px for base token tier).
             ocr: Include raw pytesseract OCR if available.
 
         Returns:
@@ -258,6 +262,63 @@ class VBoxVM:
                 "hint": "Use vm_click_text(query=...) or vm_click(x=..., y=...) to interact without spending vision tokens.",
             }
 
+        # Mode B: Transparent SoM Wireframe Map (Spatial Map with Low Tokens)
+        if mode.lower() in ("map", "som_map", "transparent"):
+            from vde_vlm.grounding import draw_grounded_overlay
+            elements = self.detect_elements()
+            self._last_elements = elements
+            map_path = draw_grounded_overlay(
+                raw_screen,
+                elements=elements,
+                transparent_bg=True,
+                max_dim=max_dim,
+            )
+            self._last_screenshot = raw_screen
+            return {
+                "vm": self.name_or_uuid,
+                "mode": "map",
+                "state": self.state,
+                "is_running": self.is_running,
+                "resolution": (metrics["width"], metrics["height"]),
+                "changed": has_changed,
+                "diff_ratio": round(diff_ratio, 4),
+                "map_screenshot": map_path,
+                "elements_count": len(elements),
+                "ui_summary": [
+                    f"[{el['id']}] {el['type'].upper()} '{el['text']}' @ ({el['centroid'][0]}, {el['centroid'][1]})"
+                    for el in elements
+                ],
+                "description": "Spatial wireframe map of UI elements rendered on a transparent background for low token expenditure.",
+            }
+
+        # Mode C: Grounded Screenshot (Full visual image with SoM boxes)
+        if mode.lower() == "grounded":
+            from vde_vlm.grounding import draw_grounded_overlay
+            elements = self.detect_elements()
+            self._last_elements = elements
+            grounded_path = draw_grounded_overlay(
+                raw_screen,
+                elements=elements,
+                transparent_bg=False,
+                max_dim=max_dim if max_dim != 512 else None,
+            )
+            self._last_screenshot = raw_screen
+            return {
+                "vm": self.name_or_uuid,
+                "mode": "grounded",
+                "state": self.state,
+                "is_running": self.is_running,
+                "resolution": (metrics["width"], metrics["height"]),
+                "changed": has_changed,
+                "diff_ratio": round(diff_ratio, 4),
+                "screenshot": grounded_path,
+                "elements_count": len(elements),
+                "ui_summary": [
+                    f"[{el['id']}] {el['type'].upper()} '{el['text']}' @ ({el['centroid'][0]}, {el['centroid'][1]})"
+                    for el in elements
+                ],
+            }
+
         # Handle optional region-of-interest cropping
         target_img = raw_screen
         if crop:
@@ -267,7 +328,7 @@ class VBoxVM:
         if grid:
             target_img = add_coordinate_grid(target_img)
 
-        # Mode B: Compact Vision Thumbnail (Low Token Tier ~258 tokens)
+        # Mode D: Compact Vision Thumbnail (Low Token Tier ~258 tokens for rough details)
         if mode.lower() == "compact":
             compact_path = create_compact_thumbnail(target_img, max_dim=max_dim, quality=55)
             self._last_screenshot = raw_screen
@@ -283,7 +344,7 @@ class VBoxVM:
                 "tokens_saved_estimate": "85-90%",
             }
 
-        # Mode C: Full Resolution Vision
+        # Mode E: Full Resolution Vision ("Token Shredder" for maximum detail)
         obs: Dict[str, Any] = {
             "vm": self.name_or_uuid,
             "mode": "full",

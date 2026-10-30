@@ -88,8 +88,22 @@ def take_screenshot(
     os.makedirs(os.path.dirname(abs_path), exist_ok=True)
 
     # VBoxManage controlvm <vm> screenshotpng <file> [display]
-    with _SCREENSHOT_LOCK:
-        run_vbox_cmd("controlvm", vm_name_or_uuid, "screenshotpng", abs_path, str(display))
+    for attempt in range(4):
+        try:
+            with _SCREENSHOT_LOCK:
+                run_vbox_cmd("controlvm", vm_name_or_uuid, "screenshotpng", abs_path, str(display))
+            if os.path.isfile(abs_path) and os.path.getsize(abs_path) > 0:
+                return abs_path
+        except Exception as e:
+            if "VERR_SHARING_VIOLATION" in str(e) and attempt < 3:
+                time.sleep(0.08 * (attempt + 1))
+                continue
+            if attempt == 3:
+                tmp_path = os.path.join(get_cache_dir(), f"tmp_{os.getpid()}_{time.time_ns()}.png")
+                with _SCREENSHOT_LOCK:
+                    run_vbox_cmd("controlvm", vm_name_or_uuid, "screenshotpng", tmp_path, str(display))
+                return tmp_path
+            raise
 
     if not os.path.isfile(abs_path) or os.path.getsize(abs_path) == 0:
         raise RuntimeError(f"Screenshot failed or produced empty file: {abs_path}")

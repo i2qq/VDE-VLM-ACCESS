@@ -52,16 +52,16 @@ TOOLS = [
     },
     {
         "name": "vm_observe",
-        "description": "Ultra-efficient VM screen observation. Defaults to 'text' mode (~50-100 tokens, saving 95%+ of weekly VLM quota). Use 'compact' for a 512px downscaled low-token thumbnail (~258 tokens).",
+        "description": "Ultra-efficient VM screen observation. Modes: 'text' (default, ~50-100 text tokens, 0 vision tokens), 'map' (SoM wireframe against transparent background, low tokens spatial map), 'compact' (512px low-token thumbnail ~258 tokens for rough details), 'full' (lossless raw screenshot for high detail).",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vm": {"type": "string", "description": "VM name or UUID"},
                 "mode": {
                     "type": "string",
-                    "enum": ["text", "compact", "full"],
+                    "enum": ["text", "compact", "map", "full", "grounded"],
                     "default": "text",
-                    "description": "Efficiency mode: 'text' (zero vision tokens, structured UI text), 'compact' (512px low-token thumbnail), 'full' (raw image)",
+                    "description": "Observation mode: 'text' (0 vision tokens), 'map' (SoM against transparent background), 'compact' (512px thumbnail), 'full' (token shredder), or 'grounded' (full screenshot with SoM).",
                 },
                 "grid": {"type": "boolean", "description": "Generate coordinate grid (for compact or full mode)", "default": False},
                 "skip_if_unchanged": {"type": "boolean", "description": "Skip re-sending if screen has not changed", "default": True},
