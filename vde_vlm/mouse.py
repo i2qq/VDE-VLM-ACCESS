@@ -76,10 +76,10 @@ def move_to(
     session, console = _get_com_console(vm_name_or_uuid)
     if console:
         try:
-            # VirtualBox absolute mouse coordinates scale from 1 to 0xFFFF (65535)
-            norm_x = max(1, min(0xFFFF, int((x / max(1, screen_width)) * 0xFFFF)))
-            norm_y = max(1, min(0xFFFF, int((y / max(1, screen_height)) * 0xFFFF)))
-            console.Mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, BUTTON_NONE)
+            # VirtualBox PutMouseEventAbsolute expects 1-based pixel coordinates: [1..width], [1..height]
+            px = max(1, min(screen_width, int(x)))
+            py = max(1, min(screen_height, int(y)))
+            console.Mouse.PutMouseEventAbsolute(px, py, 0, 0, BUTTON_NONE)
             return True
         finally:
             if session:
@@ -112,20 +112,23 @@ def click(
     session, console = _get_com_console(vm_name_or_uuid)
     if console:
         try:
-            norm_x = max(1, min(0xFFFF, int((x / max(1, screen_width)) * 0xFFFF)))
-            norm_y = max(1, min(0xFFFF, int((y / max(1, screen_height)) * 0xFFFF)))
+            # VirtualBox PutMouseEventAbsolute expects 1-based pixel coordinates: [1..width], [1..height]
+            px = max(1, min(screen_width, int(x)))
+            py = max(1, min(screen_height, int(y)))
 
             # Move and press
-            console.Mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, btn_mask)
-            time.sleep(0.05)
+            console.Mouse.PutMouseEventAbsolute(px, py, 0, 0, BUTTON_NONE)
+            time.sleep(0.04)
+            console.Mouse.PutMouseEventAbsolute(px, py, 0, 0, btn_mask)
+            time.sleep(0.06)
             # Release
-            console.Mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, BUTTON_NONE)
+            console.Mouse.PutMouseEventAbsolute(px, py, 0, 0, BUTTON_NONE)
 
             if double:
-                time.sleep(0.1)
-                console.Mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, btn_mask)
-                time.sleep(0.05)
-                console.Mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, BUTTON_NONE)
+                time.sleep(0.08)
+                console.Mouse.PutMouseEventAbsolute(px, py, 0, 0, btn_mask)
+                time.sleep(0.06)
+                console.Mouse.PutMouseEventAbsolute(px, py, 0, 0, BUTTON_NONE)
             return True
         finally:
             if session:
@@ -153,9 +156,9 @@ def scroll(
     session, console = _get_com_console(vm_name_or_uuid)
     if console:
         try:
-            norm_x = max(1, min(0xFFFF, int((x / max(1, screen_width)) * 0xFFFF)))
-            norm_y = max(1, min(0xFFFF, int((y / max(1, screen_height)) * 0xFFFF)))
-            console.Mouse.PutMouseEventAbsolute(norm_x, norm_y, delta, 0, BUTTON_NONE)
+            px = max(1, min(screen_width, int(x)))
+            py = max(1, min(screen_height, int(y)))
+            console.Mouse.PutMouseEventAbsolute(px, py, delta, 0, BUTTON_NONE)
             return True
         finally:
             if session:

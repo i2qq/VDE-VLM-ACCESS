@@ -162,6 +162,43 @@ TOOLS = [
         "description": "Clean up stale temporary screenshot files from system temp.",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "vm_detect",
+        "description": "Detect all UI buttons, labels, and text elements with Set-of-Marks bounding boxes and centroid coordinates using the visual recognition / OCR model.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "vm": {"type": "string", "description": "VM name or UUID"},
+                "confidence": {"type": "number", "description": "Minimum confidence threshold (0.0 to 1.0)", "default": 0.35},
+            },
+            "required": ["vm"],
+        },
+    },
+    {
+        "name": "vm_find",
+        "description": "Locate a specific button or text label on the VM screen and return its centroid (x, y) coordinates.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "vm": {"type": "string", "description": "VM name or UUID"},
+                "query": {"type": "string", "description": "Text label or button name to search for (e.g. 'Next', 'Cancel', 'Install')"},
+            },
+            "required": ["vm", "query"],
+        },
+    },
+    {
+        "name": "vm_click_text",
+        "description": "Find a button or text label on screen and autonomously click its centroid coordinates.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "vm": {"type": "string", "description": "VM name or UUID"},
+                "query": {"type": "string", "description": "Target button text to click"},
+                "double": {"type": "boolean", "default": False},
+            },
+            "required": ["vm", "query"],
+        },
+    },
 ]
 
 
@@ -234,6 +271,20 @@ def dispatch_tool(name: str, args: Dict[str, Any]) -> Any:
         snap_name = args["name"]
         vm.restore(snap_name)
         return {"restored": snap_name}
+
+    elif name == "vm_detect":
+        conf = float(args.get("confidence", 0.35))
+        return vm.detect_elements(confidence=conf)
+
+    elif name == "vm_find":
+        query = args["query"]
+        el = vm.find_element(query)
+        return el or {"found": False, "query": query}
+
+    elif name == "vm_click_text":
+        query = args["query"]
+        double = args.get("double", False)
+        return vm.click_element(query, double=double)
 
     raise ValueError(f"Unknown tool: {name}")
 

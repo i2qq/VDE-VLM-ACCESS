@@ -250,6 +250,41 @@ class VBoxVM:
 
         return res
 
+    def detect_elements(self, confidence: float = 0.35, include_shapes: bool = True) -> List[Dict[str, Any]]:
+        """Detect text labels, buttons, and UI elements on the current VM screen."""
+        from vde_vlm.grounding import detect_ui_elements
+        shot = self.screenshot(use_rolling_cache=True)
+        return detect_ui_elements(shot, confidence_threshold=confidence, include_shapes=include_shapes)
+
+    def find_element(self, query: str, confidence: float = 0.35) -> Optional[Dict[str, Any]]:
+        """Find a specific button or text element by label."""
+        from vde_vlm.grounding import find_element_by_text
+        shot = self.screenshot(use_rolling_cache=True)
+        return find_element_by_text(shot, query, min_confidence=confidence)
+
+    def click_element(self, query: str, button: str = "left", double: bool = False) -> Dict[str, Any]:
+        """Locate a UI element by text label and click its centroid."""
+        el = self.find_element(query)
+        if not el:
+            return {"success": False, "error": f"Element '{query}' not found on screen"}
+        cx, cy = el["centroid"]
+        res = self.click(cx, cy, button=button, double=double)
+        res["element"] = el
+        return res
+
+    def observe_grounded(self, confidence: float = 0.35) -> Dict[str, Any]:
+        """Capture screen and render Set-of-Marks (SoM) bounding box overlay."""
+        from vde_vlm.grounding import detect_ui_elements, draw_grounded_overlay
+        shot = self.screenshot(use_rolling_cache=True)
+        elements = detect_ui_elements(shot, confidence_threshold=confidence)
+        overlay_path = draw_grounded_overlay(shot, elements)
+        return {
+            "screenshot": shot,
+            "grounded_screenshot": overlay_path,
+            "elements": elements,
+            "count": len(elements),
+        }
+
     def type(self, text: str, press_enter: bool = False) -> None:
         """Type characters into the active VM window."""
         type_string(self.name_or_uuid, text, press_enter=press_enter)

@@ -98,18 +98,29 @@ class VBoxSessionManager:
         height: int = 800,
     ) -> bool:
         """Move the mouse pointer to (x, y)."""
+        px = max(1, min(width, int(x)))
+        py = max(1, min(height, int(y)))
         session = self.get_active_session(vm_name_or_uuid)
         if session and session.Console:
             try:
                 mouse = session.Console.Mouse
-                norm_x = max(1, min(0xFFFF, int((x / max(1, width)) * 0xFFFF)))
-                norm_y = max(1, min(0xFFFF, int((y / max(1, height)) * 0xFFFF)))
-                mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, BUTTON_NONE)
-                self._last_norm_x = norm_x
-                self._last_norm_y = norm_y
+                mouse.PutMouseEventAbsolute(px, py, 0, 0, BUTTON_NONE)
+                self._last_norm_x = px
+                self._last_norm_y = py
                 return True
             except Exception as exc:
                 logger.debug(f"COM mouse move error: {exc}")
+
+        # Fallback to shared lock
+        from vde_vlm.mouse import _get_com_console
+        sh_session, console = _get_com_console(vm_name_or_uuid)
+        if console:
+            try:
+                console.Mouse.PutMouseEventAbsolute(px, py, 0, 0, BUTTON_NONE)
+                return True
+            finally:
+                if sh_session:
+                    sh_session.UnlockMachine()
         return False
 
     def mouse_click(
@@ -122,39 +133,62 @@ class VBoxSessionManager:
         height: int = 800,
         double: bool = False,
     ) -> bool:
-        """Inject absolute mouse click using in-process COM Console or hardware fallback."""
+        """Inject absolute mouse click using in-process COM Console or shared lock fallback."""
         btn_mask = BUTTON_LEFT
         if button.lower() == "right":
             btn_mask = BUTTON_RIGHT
         elif button.lower() == "middle":
             btn_mask = BUTTON_MIDDLE
 
+        px = max(1, min(width, int(x)))
+        py = max(1, min(height, int(y)))
+
+        # 1. Try active session console
         session = self.get_active_session(vm_name_or_uuid)
         if session and session.Console:
             try:
                 mouse = session.Console.Mouse
-                norm_x = max(1, min(0xFFFF, int((x / max(1, width)) * 0xFFFF)))
-                norm_y = max(1, min(0xFFFF, int((y / max(1, height)) * 0xFFFF)))
-
-                # 1. Absolute mouse injection (standard for VirtualBox USB Tablet)
-                mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, BUTTON_NONE)
-                time.sleep(0.03)
-                mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, btn_mask)
+                mouse.PutMouseEventAbsolute(px, py, 0, 0, BUTTON_NONE)
+                time.sleep(0.04)
+                mouse.PutMouseEventAbsolute(px, py, 0, 0, btn_mask)
                 time.sleep(0.06)
-                mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, BUTTON_NONE)
+                mouse.PutMouseEventAbsolute(px, py, 0, 0, BUTTON_NONE)
 
                 if double:
                     time.sleep(0.08)
-                    mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, btn_mask)
+                    mouse.PutMouseEventAbsolute(px, py, 0, 0, btn_mask)
                     time.sleep(0.06)
-                    mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, BUTTON_NONE)
+                    mouse.PutMouseEventAbsolute(px, py, 0, 0, BUTTON_NONE)
 
-                self._last_norm_x = norm_x
-                self._last_norm_y = norm_y
-                logger.info(f"Mouse click injected at ({x}, {y}) norm=({norm_x}, {norm_y}) btn={button}")
+                self._last_norm_x = px
+                self._last_norm_y = py
+                logger.info(f"Mouse click injected at ({px}, {py}) btn={button}")
                 return True
             except Exception as exc:
                 logger.warning(f"COM mouse click failed: {exc}")
+
+        # 2. Try shared lock console
+        from vde_vlm.mouse import _get_com_console
+        sh_session, console = _get_com_console(vm_name_or_uuid)
+        if console:
+            try:
+                console.Mouse.PutMouseEventAbsolute(px, py, 0, 0, BUTTON_NONE)
+                time.sleep(0.04)
+                console.Mouse.PutMouseEventAbsolute(px, py, 0, 0, btn_mask)
+                time.sleep(0.06)
+                console.Mouse.PutMouseEventAbsolute(px, py, 0, 0, BUTTON_NONE)
+
+                if double:
+                    time.sleep(0.08)
+                    console.Mouse.PutMouseEventAbsolute(px, py, 0, 0, btn_mask)
+                    time.sleep(0.06)
+                    console.Mouse.PutMouseEventAbsolute(px, py, 0, 0, BUTTON_NONE)
+
+                logger.info(f"Shared lock mouse click injected at ({px}, {py}) btn={button}")
+                return True
+            finally:
+                if sh_session:
+                    sh_session.UnlockMachine()
 
         return False
 

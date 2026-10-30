@@ -77,10 +77,14 @@ def notify_agent_action(x: int, y: int, is_click: bool = True, label: str = "Gem
         "is_click": is_click,
         "last_updated": time.time(),
     }
-    asyncio.run_coroutine_threadsafe(
-        broadcast_ws({"type": "agent_cursor", **_agent_cursor_state}),
-        asyncio.get_event_loop() if asyncio.get_event_loop().is_running() else asyncio.new_event_loop(),
-    )
+    try:
+        loop = asyncio.get_running_loop()
+        asyncio.run_coroutine_threadsafe(
+            broadcast_ws({"type": "agent_cursor", **_agent_cursor_state}),
+            loop,
+        )
+    except RuntimeError:
+        pass
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -268,6 +272,41 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       animation: ripple 0.4s ease-out;
     }
 
+    /* User Focus Guidance Indicator */
+    #user-focus {
+      position: absolute;
+      top: 0; left: 0;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+      z-index: 90;
+    }
+    #user-focus.active {
+      opacity: 1;
+    }
+    .focus-ring {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      border: 2px solid var(--cyan);
+      box-shadow: 0 0 14px rgba(6, 182, 212, 0.7);
+      margin-top: -18px;
+      margin-left: -18px;
+    }
+    .focus-badge {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(6, 182, 212, 0.95);
+      color: #0b0d14;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+      white-space: nowrap;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    }
+
     /* Live Coordinate HUD */
     #coord-hud {
       position: absolute;
@@ -349,6 +388,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     <div class="toolbar">
       <button id="btn-grid" onclick="toggleGrid()">📐 Grid</button>
+      <button id="btn-grounding" onclick="toggleGrounding()">🎯 Grounding / SoM</button>
       <button id="btn-demo" class="primary" onclick="triggerAgentDemo()">✨ Demo Agent Cursor</button>
       <button id="btn-macro-toggle" onclick="toggleMacroDrawer()">⚡ Compound Macro</button>
     </div>
@@ -358,6 +398,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div id="screen-wrap">
       <img id="vm-screen" src="/api/screen" alt="Live VM Display" tabindex="0">
       <div id="grid-overlay"></div>
+
+      <!-- User Focus Marker (Guide Indicator) -->
+      <div id="user-focus">
+        <div class="focus-ring" id="user-focus-ring"></div>
+        <div class="focus-badge" id="user-focus-label">🎯 Focus</div>
+      </div>
 
       <!-- Stitch AI Cursor -->
       <div id="agent-cursor">
@@ -451,16 +497,36 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       refreshVMs();
     };
 
-    // Screen coordinate mapping
+    // Screen coordinate mapping with exact aspect-ratio letterbox compensation
     function getVMPixelCoords(e) {
       const rect = vmScreen.getBoundingClientRect();
       const natW = vmScreen.naturalWidth > 0 ? vmScreen.naturalWidth : 1280;
       const natH = vmScreen.naturalHeight > 0 ? vmScreen.naturalHeight : 800;
-      const scaleX = natW / rect.width;
-      const scaleY = natH / rect.height;
-      const x = Math.round((e.clientX - rect.left) * scaleX);
-      const y = Math.round((e.clientY - rect.top) * scaleY);
-      return { x: Math.max(0, x), y: Math.max(0, y), width: natW, height: natH };
+
+      const imgRatio = natW / natH;
+      const elemRatio = rect.width / rect.height;
+      let renderW = rect.width;
+      let renderH = rect.height;
+      let offsetX = 0;
+      let offsetY = 0;
+
+      if (elemRatio > imgRatio) {
+        renderW = rect.height * imgRatio;
+        offsetX = (rect.width - renderW) / 2;
+      } else {
+        renderH = rect.width / imgRatio;
+        offsetY = (rect.height - renderH) / 2;
+      }
+
+      const clientX = e.clientX - rect.left - offsetX;
+      const clientY = e.clientY - rect.top - offsetY;
+
+      const scaleX = natW / renderW;
+      const scaleY = natH / renderH;
+
+      const x = Math.min(natW, Math.max(1, Math.round(clientX * scaleX)));
+      const y = Math.min(natH, Math.max(1, Math.round(clientY * scaleY)));
+      return { x, y, width: natW, height: natH };
     }
 
     vmScreen.onmousemove = (e) => {
@@ -468,14 +534,58 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       coordHud.textContent = `X: ${x} | Y: ${y}`;
     };
 
+    let groundingActive = false;
+    let userFocusTimer = null;
+
+    function showUserFocus(e, vmX, vmY) {
+      const rect = vmScreen.getBoundingClientRect();
+      const wrapRect = screenWrap.getBoundingClientRect();
+      const userFocus = document.getElementById("user-focus");
+      const userLabel = document.getElementById("user-focus-label");
+      
+      const screenX = e.clientX - wrapRect.left;
+      const screenY = e.clientY - wrapRect.top;
+
+      userFocus.style.transform = `translate3d(${screenX}px, ${screenY}px, 0)`;
+      userLabel.textContent = `🎯 Focus: (${vmX}, ${vmY})`;
+      userFocus.classList.add("active");
+
+      clearTimeout(userFocusTimer);
+      userFocusTimer = setTimeout(() => {
+        userFocus.classList.remove("active");
+      }, 1800);
+    }
+
     // User direct click
     vmScreen.onmousedown = async (e) => {
       const { x, y, width, height } = getVMPixelCoords(e);
+      showUserFocus(e, x, y);
+
       const btn = e.button === 2 ? "right" : (e.button === 1 ? "middle" : "left");
       await fetch("/api/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "click", vm: currentVM, x, y, button: btn, width, height })
+      });
+    };
+
+    vmScreen.ondblclick = async (e) => {
+      const { x, y, width, height } = getVMPixelCoords(e);
+      await fetch("/api/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "click", vm: currentVM, x, y, button: "left", width, height, double: true })
+      });
+    };
+
+    vmScreen.onwheel = async (e) => {
+      e.preventDefault();
+      const { x, y, width, height } = getVMPixelCoords(e);
+      const delta = e.deltaY < 0 ? 1 : -1;
+      await fetch("/api/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "scroll", vm: currentVM, x, y, delta, width, height })
       });
     };
     vmScreen.oncontextmenu = (e) => e.preventDefault();
@@ -533,6 +643,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       document.getElementById("btn-grid").classList.toggle("active", !isVisible);
     }
 
+    function toggleGrounding() {
+      groundingActive = !groundingActive;
+      document.getElementById("btn-grounding").classList.toggle("active", groundingActive);
+      updateScreenSrc();
+    }
+
+    function updateScreenSrc() {
+      const endpoint = groundingActive ? "/api/grounded_screen" : "/api/screen";
+      vmScreen.src = `${endpoint}?t=${Date.now()}`;
+    }
+
     function toggleMacroDrawer() {
       document.getElementById("macro-drawer").classList.toggle("open");
     }
@@ -556,15 +677,31 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
         if (data.type === "agent_cursor") {
-          // Render Google Stitch-style collaborative cursor
+          // Render Google Stitch-style collaborative cursor with aspect-ratio compensation
           const rect = vmScreen.getBoundingClientRect();
           const natW = vmScreen.naturalWidth > 0 ? vmScreen.naturalWidth : 1280;
           const natH = vmScreen.naturalHeight > 0 ? vmScreen.naturalHeight : 800;
-          const scaleX = (rect.width > 0 ? rect.width : 1280) / natW;
-          const scaleY = (rect.height > 0 ? rect.height : 800) / natH;
 
-          const screenX = Math.round(data.x * scaleX);
-          const screenY = Math.round(data.y * scaleY);
+          const imgRatio = natW / natH;
+          const elemRatio = rect.width / rect.height;
+          let renderW = rect.width;
+          let renderH = rect.height;
+          let offsetX = 0;
+          let offsetY = 0;
+
+          if (elemRatio > imgRatio) {
+            renderW = rect.height * imgRatio;
+            offsetX = (rect.width - renderW) / 2;
+          } else {
+            renderH = rect.width / imgRatio;
+            offsetY = (rect.height - renderH) / 2;
+          }
+
+          const scaleX = renderW / natW;
+          const scaleY = renderH / natH;
+
+          const screenX = Math.round(offsetX + data.x * scaleX);
+          const screenY = Math.round(offsetY + data.y * scaleY);
 
           agentCursor.style.transform = `translate3d(${screenX}px, ${screenY}px, 0)`;
           agentLabel.textContent = `🤖 ${data.label} (${data.x}, ${data.y})`;
@@ -593,8 +730,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     // Poll live video frame stream smoothly without disk bloat
     function startLiveStream() {
       setInterval(() => {
-        vmScreen.src = `/api/screen?t=${Date.now()}`;
-      }, 400); // ~2.5 FPS periodic polling with zero disk shredding
+        updateScreenSrc();
+      }, 400); // Periodic polling with zero disk shredding
     }
 
     refreshVMs();
@@ -647,6 +784,27 @@ async def get_screen(vm: Optional[str] = None):
         return Response(content=f.read(), media_type="image/png")
 
 
+@app.get("/api/grounding")
+async def get_grounding(vm: Optional[str] = None):
+    """Detect UI elements, buttons, and text on screen."""
+    target_vm = VBoxVM(vm or _current_vm_name)
+    if not target_vm.is_running:
+        return {"vm": target_vm.name_or_uuid, "elements": [], "count": 0}
+    elements = target_vm.detect_elements()
+    return {"vm": target_vm.name_or_uuid, "elements": elements, "count": len(elements)}
+
+
+@app.get("/api/grounded_screen")
+async def get_grounded_screen(vm: Optional[str] = None):
+    """Serve latest screen frame annotated with Set-of-Marks UI element bounding boxes."""
+    target_vm = VBoxVM(vm or _current_vm_name)
+    if not target_vm.is_running:
+        return await get_screen(vm)
+    data = target_vm.observe_grounded()
+    with open(data["grounded_screenshot"], "rb") as f:
+        return Response(content=f.read(), media_type="image/png")
+
+
 @app.post("/api/action")
 async def execute_action(req: Request):
     data = await req.json()
@@ -670,11 +828,19 @@ async def execute_action(req: Request):
         w = int(data.get("width", 1280))
         h = int(data.get("height", 800))
         double = bool(data.get("double", False))
-        notify_agent_action(x, y, is_click=True, label="User")
         from vde_vlm.session_manager import VBoxSessionManager
-        VBoxSessionManager.get_instance().mouse_click(vm_name, x, y, button=btn, width=w, height=h, double=double)
-        vm.click(x, y, button=btn, double=double)
+        ok = VBoxSessionManager.get_instance().mouse_click(vm_name, x, y, button=btn, width=w, height=h, double=double)
+        if not ok:
+            vm.click(x, y, button=btn, double=double, broadcast_cursor=False)
         return {"status": "clicked", "x": x, "y": y}
+
+    elif action_type == "scroll":
+        x = int(data.get("x", 640))
+        y = int(data.get("y", 400))
+        delta = int(data.get("delta", 1))
+        from vde_vlm.mouse import scroll
+        scroll(vm_name, x, y, delta=delta)
+        return {"status": "scrolled", "delta": delta}
 
     elif action_type == "key":
         chord = data.get("chord", "enter")

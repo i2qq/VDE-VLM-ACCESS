@@ -129,6 +129,19 @@ def main(args: Optional[List[str]] = None) -> int:
     # clean
     subparsers.add_parser("clean", help="Clean up stale temporary screenshot files from system temp")
 
+    # detect / find / click-text (Visual Grounding & OCR)
+    p_detect = subparsers.add_parser("detect", help="Detect UI elements, buttons, and OCR text on screen")
+    p_detect.add_argument("vm", help="VM name or UUID")
+    p_detect.add_argument("-c", "--confidence", type=float, default=0.35, help="Confidence threshold")
+
+    p_find = subparsers.add_parser("find", help="Find a button or text element on screen by label")
+    p_find.add_argument("vm", help="VM name or UUID")
+    p_find.add_argument("query", help="Text label to locate")
+
+    p_click_text = subparsers.add_parser("click-text", help="Locate an element by text label and click its centroid")
+    p_click_text.add_argument("vm", help="VM name or UUID")
+    p_click_text.add_argument("query", help="Text label to click")
+
     # serve (MCP)
     subparsers.add_parser("serve", help="Run the MCP stdio tool server")
 
@@ -271,6 +284,32 @@ def main(args: Optional[List[str]] = None) -> int:
                 from vde_vlm.snapshots import delete_snapshot
                 delete_snapshot(parsed.vm, parsed.name)
                 print(f"Snapshot '{parsed.name}' deleted.")
+
+        elif parsed.command == "detect":
+            elements = vm.detect_elements(confidence=parsed.confidence)
+            print(f"Detected {len(elements)} elements on screen:")
+            for el in elements:
+                cx, cy = el["centroid"]
+                print(f"  [{el['id']}] {el['type'].upper()}: '{el['text']}' -> ({cx}, {cy}) conf={el['confidence']}")
+            return 0
+
+        elif parsed.command == "find":
+            el = vm.find_element(parsed.query)
+            if not el:
+                print(f"Element '{parsed.query}' not found on screen.")
+                return 1
+            cx, cy = el["centroid"]
+            print(f"Found '{el['text']}' at centroid ({cx}, {cy}) bbox={el['bbox']} conf={el['confidence']}")
+            return 0
+
+        elif parsed.command == "click-text":
+            res = vm.click_element(parsed.query)
+            if not res.get("success"):
+                print(f"Failed to click '{parsed.query}': {res.get('error')}", file=sys.stderr)
+                return 1
+            cx, cy = res["x"], res["y"]
+            print(f"Successfully clicked '{parsed.query}' at ({cx}, {cy}).")
+            return 0
 
         return 0
 
