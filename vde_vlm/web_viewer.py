@@ -219,12 +219,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     /* Collaborative Agent Cursor (Google Stitch Style) */
     #agent-cursor {
       position: absolute;
-      top: -100px; left: -100px;
+      top: 0; left: 0;
       pointer-events: none;
-      transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+      opacity: 0;
+      transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s ease;
       z-index: 100;
       display: flex;
       align-items: flex-start;
+    }
+    #agent-cursor.visible {
+      opacity: 1;
     }
     .cursor-pointer {
       width: 22px;
@@ -392,6 +396,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     let currentVM = "";
     let isConnected = false;
     let ws = null;
+    let cursorFadeTimer = null;
 
     // Load registered VMs
     async function refreshVMs() {
@@ -553,22 +558,28 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         if (data.type === "agent_cursor") {
           // Render Google Stitch-style collaborative cursor
           const rect = vmScreen.getBoundingClientRect();
-          const natW = vmScreen.naturalWidth > 0 ? vmScreen.naturalWidth : 720;
-          const natH = vmScreen.naturalHeight > 0 ? vmScreen.naturalHeight : 400;
-          const scaleX = (rect.width > 0 ? rect.width : 720) / natW;
-          const scaleY = (rect.height > 0 ? rect.height : 400) / natH;
+          const natW = vmScreen.naturalWidth > 0 ? vmScreen.naturalWidth : 1280;
+          const natH = vmScreen.naturalHeight > 0 ? vmScreen.naturalHeight : 800;
+          const scaleX = (rect.width > 0 ? rect.width : 1280) / natW;
+          const scaleY = (rect.height > 0 ? rect.height : 800) / natH;
 
           const screenX = Math.round(data.x * scaleX);
           const screenY = Math.round(data.y * scaleY);
 
           agentCursor.style.transform = `translate3d(${screenX}px, ${screenY}px, 0)`;
           agentLabel.textContent = `🤖 ${data.label} (${data.x}, ${data.y})`;
+          agentCursor.classList.add("visible");
 
           if (data.is_click) {
             agentRipple.classList.remove("active");
             void agentRipple.offsetWidth; // retrigger animation
             agentRipple.classList.add("active");
           }
+
+          clearTimeout(cursorFadeTimer);
+          cursorFadeTimer = setTimeout(() => {
+            agentCursor.classList.remove("visible");
+          }, 3500);
         } else if (data.type === "vm_state") {
           updateStatus(data.state);
         }
@@ -644,7 +655,8 @@ async def execute_action(req: Request):
     vm = VBoxVM(vm_name)
 
     if action_type == "start":
-        vm.start(headless=True)
+        from vde_vlm.session_manager import VBoxSessionManager
+        VBoxSessionManager.get_instance().start_vm_interactive(vm_name, headless=True)
         return {"status": "started", "state": vm.state}
 
     elif action_type == "stop":

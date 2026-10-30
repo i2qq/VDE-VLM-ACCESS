@@ -95,6 +95,14 @@ class VBoxVM:
             logger.info(f"VM '{self.name_or_uuid}' is already running.")
             return True
 
+        from vde_vlm.session_manager import VBoxSessionManager
+        sm = VBoxSessionManager.get_instance()
+        ok = sm.start_vm_interactive(self.name_or_uuid, headless=headless)
+        if ok and self.is_running:
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+            return True
+
         vm_type = "headless" if headless else "gui"
         run_vbox_cmd("startvm", self.name_or_uuid, "--type", vm_type)
         if wait_seconds > 0:

@@ -34,7 +34,8 @@ class VBoxSessionManager:
         self._vbox = None
         self._active_session = None
         self._active_vm_name = None
-        self._screen_res: Tuple[int, int] = (1280, 800)
+        self._last_norm_x: int = 32768
+        self._last_norm_y: int = 32768
         self._init_com()
 
     @classmethod
@@ -88,6 +89,29 @@ class VBoxSessionManager:
         run_vbox_cmd("startvm", vm_name_or_uuid, "--type", "headless" if headless else "gui")
         return is_vm_running(vm_name_or_uuid)
 
+    def mouse_move(
+        self,
+        vm_name_or_uuid: str,
+        x: int,
+        y: int,
+        width: int = 1280,
+        height: int = 800,
+    ) -> bool:
+        """Move the mouse pointer to (x, y)."""
+        session = self.get_active_session(vm_name_or_uuid)
+        if session and session.Console:
+            try:
+                mouse = session.Console.Mouse
+                norm_x = max(1, min(0xFFFF, int((x / max(1, width)) * 0xFFFF)))
+                norm_y = max(1, min(0xFFFF, int((y / max(1, height)) * 0xFFFF)))
+                mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, BUTTON_NONE)
+                self._last_norm_x = norm_x
+                self._last_norm_y = norm_y
+                return True
+            except Exception as exc:
+                logger.debug(f"COM mouse move error: {exc}")
+        return False
+
     def mouse_click(
         self,
         vm_name_or_uuid: str,
@@ -112,18 +136,22 @@ class VBoxSessionManager:
                 norm_x = max(1, min(0xFFFF, int((x / max(1, width)) * 0xFFFF)))
                 norm_y = max(1, min(0xFFFF, int((y / max(1, height)) * 0xFFFF)))
 
-                # Move & Press
+                # 1. Absolute mouse injection (standard for VirtualBox USB Tablet)
+                mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, BUTTON_NONE)
+                time.sleep(0.03)
                 mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, btn_mask)
-                time.sleep(0.04)
-                # Release
+                time.sleep(0.06)
                 mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, BUTTON_NONE)
 
                 if double:
                     time.sleep(0.08)
                     mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, btn_mask)
-                    time.sleep(0.04)
+                    time.sleep(0.06)
                     mouse.PutMouseEventAbsolute(norm_x, norm_y, 0, 0, BUTTON_NONE)
 
+                self._last_norm_x = norm_x
+                self._last_norm_y = norm_y
+                logger.info(f"Mouse click injected at ({x}, {y}) norm=({norm_x}, {norm_y}) btn={button}")
                 return True
             except Exception as exc:
                 logger.warning(f"COM mouse click failed: {exc}")
@@ -138,14 +166,13 @@ class VBoxSessionManager:
         if session and session.Console:
             try:
                 kbd = session.Console.Keyboard
-                # Hex scancodes converted to integer bytes for PutScancodes
                 sc_ints = [int(s, 16) for s in (makes + breaks)]
                 kbd.PutScancodes(sc_ints)
                 return True
             except Exception as exc:
                 logger.debug(f"Direct COM PutScancodes failed: {exc}")
 
-        # Fallback to rock-solid VBoxManage controlvm keyboardputscancode
+        # Fallback to VBoxManage controlvm keyboardputscancode
         run_vbox_cmd("controlvm", vm_name_or_uuid, "keyboardputscancode", *makes)
         time.sleep(0.03)
         run_vbox_cmd("controlvm", vm_name_or_uuid, "keyboardputscancode", *breaks)
