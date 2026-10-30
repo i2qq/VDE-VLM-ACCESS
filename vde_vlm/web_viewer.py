@@ -28,6 +28,8 @@ from vde_vlm.macro import execute_batch
 from vde_vlm.vbox import list_vms
 from vde_vlm.vision import clean_temp_artifacts, get_rolling_screen_path, take_screenshot
 
+import threading
+
 logger = logging.getLogger("vde_vlm.web_viewer")
 
 app = FastAPI(title="VDE-VLM Collaborative Studio", version="2.0.0")
@@ -44,6 +46,55 @@ _agent_cursor_state: Dict[str, Any] = {
     "is_click": False,
     "last_updated": 0,
 }
+
+# In-memory zero-latency frame cache
+_frame_lock = threading.Lock()
+_cached_screen_bytes: bytes = b""
+_cached_grounded_bytes: bytes = b""
+_is_grounding_requested: bool = False
+
+
+def _capture_frame_sync(vm_name: str, do_grounding: bool = False):
+    """Synchronous background capture worker running in worker thread."""
+    global _cached_screen_bytes, _cached_grounded_bytes
+    try:
+        vm = VBoxVM(vm_name)
+        if not vm.is_running:
+            return
+
+        shot_path = vm.screenshot(use_rolling_cache=True)
+        if os.path.exists(shot_path) and os.path.getsize(shot_path) > 1000:
+            with open(shot_path, "rb") as f:
+                raw_bytes = f.read()
+            with _frame_lock:
+                _cached_screen_bytes = raw_bytes
+
+            if do_grounding:
+                from vde_vlm.grounding import detect_ui_elements, draw_grounded_overlay
+                elements = detect_ui_elements(shot_path)
+                grounded_path = draw_grounded_overlay(shot_path, elements)
+                if os.path.exists(grounded_path) and os.path.getsize(grounded_path) > 1000:
+                    with open(grounded_path, "rb") as f:
+                        g_bytes = f.read()
+                    with _frame_lock:
+                        _cached_grounded_bytes = g_bytes
+    except Exception as exc:
+        logger.debug(f"Background capture error: {exc}")
+
+
+async def _background_capture_loop():
+    """Background continuous frame capture loop (no request blocking)."""
+    while True:
+        try:
+            await asyncio.to_thread(_capture_frame_sync, _current_vm_name, _is_grounding_requested)
+        except Exception:
+            pass
+        await asyncio.sleep(0.35 if not _is_grounding_requested else 1.2)
+
+
+@app.on_event("startup")
+async def on_startup():
+    asyncio.create_task(_background_capture_loop())
 
 
 def get_current_vm() -> VBoxVM:
@@ -494,7 +545,80 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "stop", vm: currentVM })
       });
-      refreshVMs();
+      function toggleMacroDrawer() {
+      document.getElementById("macro-drawer").classList.toggle("open");
+    }
+
+    async function runMacro() {
+      const text = document.getElementById("macro-input").value;
+      const lines = text.split("\n").filter(l => l.trim().length > 0);
+      await fetch("/api/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vm: currentVM, steps: lines })
+      });
+      toggleMacroDrawer();
+    }
+
+    // Connect WebSocket for Live MJPEG / Cursor updates
+    function connectWS() {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === "agent_cursor") {
+          // Render Google Stitch-style collaborative cursor with aspect-ratio compensation
+          const rect = vmScreen.getBoundingClientRect();
+          const natW = vmScreen.naturalWidth > 0 ? vmScreen.naturalWidth : 1280;
+          const natH = vmScreen.naturalHeight > 0 ? vmScreen.naturalHeight : 800;
+
+          const imgRatio = natW / natH;
+          const elemRatio = rect.width / rect.height;
+          let renderW = rect.width;
+          let renderH = rect.height;
+          let offsetX = 0;
+          let offsetY = 0;
+
+          if (elemRatio > imgRatio) {
+            renderW = rect.height * imgRatio;
+            offsetX = (rect.width - renderW) / 2;
+          } else {
+            renderH = rect.width / imgRatio;
+            offsetY = (rect.height - renderH) / 2;
+          }
+
+          const scaleX = renderW / natW;
+          const scaleY = renderH / natH;
+
+          const screenX = Math.round(offsetX + data.x * scaleX);
+          const screenY = Math.round(offsetY + data.y * scaleY);
+
+          agentCursor.style.transform = `translate3d(${screenX}px, ${screenY}px, 0)`;
+          agentLabel.textContent = `🤖 ${data.label} (${data.x}, ${data.y})`;
+          agentCursor.classList.add("visible");
+
+          if (data.is_click) {
+            agentRipple.classList.remove("active");
+            void agentRipple.offsetWidth; // retrigger animation
+            agentRipple.classList.add("active");
+          }
+
+          clearTimeout(cursorFadeTimer);
+          cursorFadeTimer = setTimeout(() => {
+            agentCursor.classList.remove("visible");
+          }, 3500);
+        } else if (data.type === "vm_state") {
+          updateStatus(data.state);
+        }
+      };
+
+      ws.onclose = () => {
+        setTimeout(connectWS, 2000);
+      };
+    }
+
+    refreshVMs();
     };
 
     // Screen coordinate mapping with exact aspect-ratio letterbox compensation
@@ -646,12 +770,33 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     function toggleGrounding() {
       groundingActive = !groundingActive;
       document.getElementById("btn-grounding").classList.toggle("active", groundingActive);
-      updateScreenSrc();
     }
 
-    function updateScreenSrc() {
+    // Double-buffered smooth video streaming (zero flickering, no broken image icons)
+    let isFetching = false;
+    function fetchNextFrame() {
+      if (isFetching) return;
+      isFetching = true;
+
       const endpoint = groundingActive ? "/api/grounded_screen" : "/api/screen";
-      vmScreen.src = `${endpoint}?t=${Date.now()}`;
+      const preloader = new Image();
+
+      preloader.onload = () => {
+        vmScreen.src = preloader.src;
+        isFetching = false;
+        setTimeout(fetchNextFrame, groundingActive ? 900 : 350);
+      };
+
+      preloader.onerror = () => {
+        isFetching = false;
+        setTimeout(fetchNextFrame, 1000);
+      };
+
+      preloader.src = `${endpoint}?t=${Date.now()}`;
+    }
+
+    function startLiveStream() {
+      fetchNextFrame();
     }
 
     function toggleMacroDrawer() {
@@ -727,13 +872,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       };
     }
 
-    // Poll live video frame stream smoothly without disk bloat
-    function startLiveStream() {
-      setInterval(() => {
-        updateScreenSrc();
-      }, 400); // Periodic polling with zero disk shredding
-    }
-
     refreshVMs();
     connectWS();
     startLiveStream();
@@ -768,20 +906,37 @@ async def select_vm(name: str):
 
 @app.get("/api/screen")
 async def get_screen(vm: Optional[str] = None):
-    """Serve latest screen frame directly from rolling cache (zero disk shredding)."""
+    """Serve latest screen frame directly from zero-latency memory cache."""
+    global _cached_screen_bytes
+    with _frame_lock:
+        if _cached_screen_bytes:
+            return Response(
+                content=_cached_screen_bytes,
+                media_type="image/png",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )
+
     target_vm = VBoxVM(vm or _current_vm_name)
     if not target_vm.is_running:
-        # Generate placeholder image if VM is not running
         from PIL import Image
         img = Image.new("RGB", (720, 400), color=(15, 18, 25))
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=75)
         return Response(content=buf.getvalue(), media_type="image/jpeg")
 
-    # Overwrite persistent rolling cache file in place
-    screen_path = target_vm.screenshot(use_rolling_cache=True)
-    with open(screen_path, "rb") as f:
-        return Response(content=f.read(), media_type="image/png")
+    # Immediate capture on cold start
+    shot_path = await asyncio.to_thread(target_vm.screenshot, False, True)
+    if os.path.exists(shot_path):
+        with open(shot_path, "rb") as f:
+            data = f.read()
+        with _frame_lock:
+            _cached_screen_bytes = data
+        return Response(
+            content=data,
+            media_type="image/png",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
+    raise HTTPException(status_code=503, detail="Screen unavailable")
 
 
 @app.get("/api/grounding")
@@ -790,19 +945,25 @@ async def get_grounding(vm: Optional[str] = None):
     target_vm = VBoxVM(vm or _current_vm_name)
     if not target_vm.is_running:
         return {"vm": target_vm.name_or_uuid, "elements": [], "count": 0}
-    elements = target_vm.detect_elements()
+    elements = await asyncio.to_thread(target_vm.detect_elements)
     return {"vm": target_vm.name_or_uuid, "elements": elements, "count": len(elements)}
 
 
 @app.get("/api/grounded_screen")
 async def get_grounded_screen(vm: Optional[str] = None):
     """Serve latest screen frame annotated with Set-of-Marks UI element bounding boxes."""
-    target_vm = VBoxVM(vm or _current_vm_name)
-    if not target_vm.is_running:
-        return await get_screen(vm)
-    data = target_vm.observe_grounded()
-    with open(data["grounded_screenshot"], "rb") as f:
-        return Response(content=f.read(), media_type="image/png")
+    global _is_grounding_requested, _cached_grounded_bytes
+    _is_grounding_requested = True
+
+    with _frame_lock:
+        if _cached_grounded_bytes:
+            return Response(
+                content=_cached_grounded_bytes,
+                media_type="image/png",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )
+
+    return await get_screen(vm)
 
 
 @app.post("/api/action")

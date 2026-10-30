@@ -13,11 +13,14 @@ import glob
 import os
 import shutil
 import tempfile
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFont
 
 from vde_vlm.vbox import run_vbox_cmd
+
+_SCREENSHOT_LOCK = threading.Lock()
 
 # Fixed rolling cache directory to prevent disk bloating
 _DEFAULT_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".vde_vlm", "cache")
@@ -85,7 +88,8 @@ def take_screenshot(
     os.makedirs(os.path.dirname(abs_path), exist_ok=True)
 
     # VBoxManage controlvm <vm> screenshotpng <file> [display]
-    run_vbox_cmd("controlvm", vm_name_or_uuid, "screenshotpng", abs_path, str(display))
+    with _SCREENSHOT_LOCK:
+        run_vbox_cmd("controlvm", vm_name_or_uuid, "screenshotpng", abs_path, str(display))
 
     if not os.path.isfile(abs_path) or os.path.getsize(abs_path) == 0:
         raise RuntimeError(f"Screenshot failed or produced empty file: {abs_path}")
