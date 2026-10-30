@@ -74,15 +74,24 @@ http://localhost:7891                   vde-vlm macro / click                   
 
 ## 🚀 Quickstart
 
-### 1. Installation
+### 1. Installation & Global PATH Setup
 
 ```bash
 git clone https://github.com/i2qq/VDE-VLM-ACCESS.git
 cd VDE-VLM-ACCESS
 pip install -e .
+
+# Optional helper to install universal shims into ~/.local/bin:
+powershell -ExecutionPolicy Bypass -File ./scripts/install-path.ps1  # On Windows
+# ./scripts/install-path.sh                                          # On Linux/macOS
 ```
 
-### 2. Discover VMs
+Once installed, `vde-vlm` works globally from **any working directory** in:
+- **PowerShell (`pwsh` / `powershell`)**
+- **Command Prompt (`cmd.exe`)**
+- **Bash / Sh (`Git Bash`, `WSL`, `MSYS2`, `w64devkit`)**
+
+### 2. Discover VMs (From any directory)
 
 ```bash
 vde-vlm list
